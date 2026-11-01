@@ -11,7 +11,7 @@ Method: mechanical static translation of the 6502 code to 68020 + runtime models
 
 ## Status (work in progress; nothing tested on real hardware)
 The game runs on an emulated A1200 (FS-UAE, Kickstart 3.1, 2 MB chip + 2 MB fast RAM): title, menus, track select and the race itself are displayed
-correctly.  **Sound is not implemented yet.**  Speed is below 100 % (see "Speed").
+correctly.  Sound: APU model (pulse/triangle/noise, frame counter) drives Paula directly.  Speed is below 100 % (see "Speed").
 
 Build:  `cd platform && make ROM=/path/to/Excitebike\ \(Europe\).nes`  ->  `platform/build/exb_a1200.adf` (the ADF contains the game's code translated from the
 user's ROM and the ROM data itself; it is a private build artefact, do not distribute).  `make ... EXTRA=-DHUD` adds the measurement overlay
@@ -47,5 +47,10 @@ Test scripts: `ref/run_checks.sh`, `test/run.sh` (per-instruction), `test/build_
 * 1013 static instructions were not executed by any test movie (only the per-instruction tests cover them).
 * Real-time pacing uses the CIA-B timer at the NES PAL frame rate (50.0070 Hz); display frames are skipped while behind.
 
+## Sound (rt/apu.c, platform/audio.c)
+* The APU model replays every cycle-stamped register write with the PAL frame counter (envelopes, linear counter, length counters, sweeps) and gives the channel state at each frame boundary; the register write sequence it consumes is identical to MAME's over 3000 frames (see above).
+* Paula plays looping hardware waveforms (pulse duty tables, 32/16/8 step triangle, 15-bit and 93-step LFSR noise loop, decimated for fast noise periods): no CPU time per sample, no resampling.  Check against MAME's audio: dominant frequencies agree at the sampled times (e.g. 121 / 182 / 488 Hz at the same game states; see test/fsuae/snd.sh, AUDIO_OUT recording).
+* Limits: panned (pulse1 L, pulse2 R, triangle R, noise L) instead of mono; volume and period are applied once per frame (envelope steps inside a frame are not heard); the DMC level ($4011) is not played; pulse/triangle periods that would need Paula periods below 124 are clamped or use shorter waveforms; the nonlinear NES mixer is approximated by per-channel gains.
+
 ## Not done yet
-APU/sound (Paula), further speed work (target 100 %), regression battery in FS-UAE (boot, pause, soak), real-hardware tests, final docs.
+Further speed work (target 100 %), regression battery in FS-UAE (boot, pause, soak), real-hardware tests, final docs.

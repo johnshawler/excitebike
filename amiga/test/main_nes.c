@@ -36,6 +36,7 @@ static u8 pad_for(long f) {
 }
 void plat_pad(u32 f) { c_set_pad(pad_for(f)); }
 extern u8 rt_skip_next;
+void plat_apu(const struct ApuOut *o, u32 f) { if (tr) fprintf(tr, "A %u %u %u %u %u %u %u %u %u %u %u %u %u %u\n", f, o->per[0], o->per[1], o->per[2], o->per[3], o->vol[0], o->vol[1], o->vol[2], o->vol[3], o->duty[0], o->duty[1], o->noise_short, o->dac, o->retrig[0] | o->retrig[1] << 1 | o->retrig[2] << 2 | o->retrig[3] << 3); }
 void plat_frame(u32 f) {
     if (getenv("SKIP34")) { static unsigned k; k++; rt_skip_next = (k & 3) != 0; }
     if (pixf && ((f >= 495 && f <= 530) || (f % 10 == 0 && f >= 100))) { fputc(f & 255, pixf); fputc(f >> 8, pixf); fwrite(frame_pix, 1, sizeof frame_pix, pixf); }

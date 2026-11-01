@@ -12,7 +12,7 @@ uint16_t c2p_uni_words[256][8] __attribute__((aligned(4)));
 
 static uint32_t pal32[256], palf[256];
 extern u8 rt_frame_fast, rt_skip_next; extern u8 *fr_bmp, *fr_priv, *fr_clean; static u8 clean_store[240 * 500]; extern void fr_palette(u8 out[32]);
-extern void fd_show_slow(void); extern void fd_show_fast(void); extern int fd_mode_now(void);
+extern void audio_init(void); extern void fd_show_slow(void); extern void fd_show_fast(void); extern int fd_mode_now(void);
 static uint8_t chip_bmp[240 * 500 + 16] __attribute__((section(".chipbuf"), aligned(16)));
 static uint8_t chip_priv[4 * 500 + 16] __attribute__((section(".chipbuf"), aligned(16)));
 static uint8_t fast_pal_shadow[32]; static int pal_mode = -1;
@@ -122,7 +122,7 @@ void main(void)
     for (unsigned i = 0; i < 256; i++) pal32[i] = nes_pal_rgb[i & 63];
     plat_set_palette256(pal32); pal_mode = 0;
     fr_bmp = chip_bmp + 8; fr_priv = chip_priv + 8; fr_clean = clean_store;
-    fd_show_slow();
+    fd_show_slow(); audio_init();
     prg = rom_prg; chr = rom_chr;
     c_reset();
     exb_run(ram, prg, &rt, dispatch_tab);

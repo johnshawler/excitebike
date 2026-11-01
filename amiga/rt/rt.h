@@ -9,4 +9,14 @@ u32 c_rd(u32 stamp, u32 addr); u32 c_wr(u32 stamp, u32 addr, u32 val); u32 c_eve
 void c_set_pad(u8 p); void c_reset(void); u32 c_frame_no(void);
 u32 c_fuse_poll(u32 T0, u32 maskv, u32 whilenz, u32 limit, u32 *val, u32 *exited); u32 c_idle(u32 now, u32 limit, u32 S); u64 c_epoch(void);
 void plat_frame(u32 frame); void plat_pad(u32 frame); void plat_trace(char kind, u32 frame, u32 cyc, u16 addr, u8 val); 
+
+struct ApuOut {
+    u16 per[4];          /* timer register (11 bit) for pulse1, pulse2, triangle; noise: period in CPU cycles */
+    u8 vol[4];           /* 0..15 (triangle: 15 when audible); 0 = silent */
+    u8 duty[2];          /* pulse duty 0..3 */
+    u8 noise_short;      /* noise mode bit */
+    u8 dac;              /* $4011 level */
+    u8 retrig[4];        /* set when the channel was (re)started inside this frame (length load) */
+};
+void plat_apu(const struct ApuOut *o, u32 frame);
 #endif

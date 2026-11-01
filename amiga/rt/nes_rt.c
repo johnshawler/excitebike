@@ -167,6 +167,8 @@ static void midflush_check(void) { if (nseg) fr_midflush = 1; }
 u8 rt_skip_next;                      /* set by the platform: do not render the frame that is about to finish (the game state is unaffected) */
 u8 rt_frame_fast;                      /* 2: frame skipped, 1: the finished frame is described by fr_bands (hardware scroll display), 0: frame_pix is valid */
 #include "fastr.c"
+#include "apu.c"
+__attribute__((weak)) void plat_apu(const struct ApuOut *o, u32 frame) { (void)o; (void)frame; }
 static void render_slow(void);
 static void render_log(int at_hook) {
     if (!nseg) return;
@@ -291,6 +293,7 @@ static int dump_pending;
 static void frame_hook(void) {
     frame_no++;
     plat_pad(frame_no);                 /* input is sampled at the frame boundary (as in the reference) */
+    { struct ApuOut ao; apu_run_to(cycle_of_dot(dots_done), &ao); plat_apu(&ao, frame_no); }
     dump_pending = 1; due_dirty = 1;     /* the frame dump is made at the next instruction boundary */
 }
 /* advance the PPU to P dots processed */
@@ -345,7 +348,7 @@ u32 c_event(u32 now) {
     if (dump_pending) { dump_pending = 0; plat_frame(frame_no); }
     while (now >= 2 * EPOCH_CYC) {                      /* re-base the time scale: the translated code subtracts rt.rebase from its cycle counter */
         now -= EPOCH_CYC; rt.rebase += EPOCH_CYC; epoch_cycles += EPOCH_CYC;
-        dots_done -= EPOCH_DOTS; fbase -= EPOCH_DOTS; if (nmi_pending) nmi_edge -= EPOCH_CYC;
+        apu_rebase(EPOCH_CYC); dots_done -= EPOCH_DOTS; fbase -= EPOCH_DOTS; if (nmi_pending) nmi_edge -= EPOCH_CYC;
     }
     reschedule();
     return nmi_pending && nmi_edge + 1 <= now;
@@ -402,6 +405,7 @@ u32 c_wr(u32 stamp, u32 addr, u32 val) {
     if (addr < 0x4000 || addr == 0x4014) io_sync(stamp);                        /* only the PPU (and the OAM DMA, which reads RAM) depends on the exact time */
 #endif
     if (addr < 0x2000) ram[addr & 0x7ff] = d;
+    else if (addr >= 0x4000 && addr < 0x4018 && addr != 0x4014 && addr != 0x4016) apu_write(stamp, (u8)(addr & 0x1f), d);
     else if (addr < 0x4000) {
         open_bus = d;
         switch (addr & 7) {

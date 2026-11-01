@@ -40,6 +40,8 @@ $(B)/nes_main.o: nes_main.c $(B)/nespal.h | $(B)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(B)/plat.o: platform.c platform.h | $(B)
 	$(CC) $(CFLAGS) -Wextra -DPLAT_FMODE=1 -c $< -o $@
+$(B)/audio.o: audio.c platform.h ../rt/rt.h | $(B)
+	$(CC) $(CFLAGS) -c $< -o $@
 $(B)/fastdisp.o: fastdisp.c platform.h | $(B)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(B)/rt.o: rt.c | $(B)
@@ -48,7 +50,7 @@ $(B)/boot.bin: boot.s | $(B)
 	$(CC) $(ASFLAGS) -x assembler -c $< -o $(B)/boot.o
 	$(LD) -e 0 -Ttext=0 --oformat=binary -o $@ $(B)/boot.o
 	@test `stat -c %s $@` -le 1024 || (echo "bootblock > 1024 bytes"; false)
-OBJS := $(B)/crt0.o $(B)/prog.o $(B)/rt6502.o $(B)/nes_rt.o $(B)/nes_main.o $(B)/romdata.o $(B)/c2p.o $(B)/fastdisp.o $(B)/plat.o $(B)/isr.o $(B)/rt.o $(B)/rtasm.o
+OBJS := $(B)/crt0.o $(B)/prog.o $(B)/rt6502.o $(B)/nes_rt.o $(B)/nes_main.o $(B)/romdata.o $(B)/c2p.o $(B)/fastdisp.o $(B)/audio.o $(B)/plat.o $(B)/isr.o $(B)/rt.o $(B)/rtasm.o
 $(B)/exb.elf: $(OBJS) link.ld
 	$(LD) -T link.ld -Map=$(B)/exb.map -o $@ $(OBJS)
 $(B)/exb.bin: $(B)/exb.elf
