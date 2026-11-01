@@ -27,16 +27,38 @@ local function press(name,on)
   for t,p in pairs(m.ioport.ports) do for n,f in pairs(p.fields) do if n==name then f:set_value(on and 1 or 0) end end end
 end
 local start_f = tonumber(os.getenv("START_FRAME") or "600")
+local iscr = {}
+do
+  local fn = os.getenv("INPUT_SCRIPT")
+  if fn then
+    for line in io.lines(fn) do
+      if line:sub(1,1) ~= "#" then
+        local a,b,m,p,o = line:match("^(%d+)%s+(%d+)%s+(%x+)%s+(%d+)%s+(%d+)")
+        if a then iscr[#iscr+1] = {tonumber(a),tonumber(b),tonumber(m,16),tonumber(p),tonumber(o)} end
+      end
+    end
+  end
+end
+local names = {[1]="P1 A",[2]="P1 B",[4]="P1 Select",[8]="P1 Start",[16]="P1 Up",[32]="P1 Down",[64]="P1 Left",[128]="P1 Right"}
 emu.register_frame_done(function()
   frame = frame + 1
   -- input
   local f = frame
+  if #iscr > 0 then
+    for bit,name in pairs(names) do
+      local on = false
+      for _,e in ipairs(iscr) do if f>=e[1] and f<e[2] and (e[4]==0 or (f % e[4]) < e[5]) and (e[3] & bit) ~= 0 then on = true end end
+      press(name, on)
+    end
+    goto skipold
+  end
   press("P1 Start", f>=start_f and f<start_f+4)
   press("P1 A", f>=start_f+10 and (f%7)~=0)      -- A: accelerate
   press("P1 Right", f>=start_f+300 and (f%40)<20)
   press("P1 Up", f>=start_f+200 and (f%97)<5)
   press("P1 Down", f>=start_f+260 and (f%89)<5)
   press("P1 B", f>=start_f+120 and (f%3)==0)
+  ::skipold::
   -- pixels: one byte per pixel = index of first appearance of the RGB value; the RGB table is appended on request
   if want_pix(frame) then
     local px = scr:pixels()

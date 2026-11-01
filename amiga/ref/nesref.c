@@ -249,7 +249,7 @@ static void branch(int cond) {
     int8_t o = (int8_t)fetch();
     if (cond) { RD(c.pc); u16 n = c.pc + o; if ((n & 0xff00) != (c.pc & 0xff00)) RD((c.pc & 0xff00) | (n & 0xff)); c.pc = n; }
 }
-static unsigned long long pc_lo, pc_hi;
+static u8 cov_jmp[65536]; static unsigned long long pc_lo, pc_hi; static u8 cov[65536]; static unsigned jmpind_n; static u16 jmpind_t[64];
 static int inst_end_nmi_check;
 static u64 inst_start_cycle;
 static void do_interrupt(u16 vec, int brk) {
@@ -263,6 +263,7 @@ static void cpu_step(void) {
     /* interrupt sampling: an NMI edge that occurred before the last cycle of the previous instruction is taken now */
     if (nmi_pending && nmi_edge_cycle <= cpu_cycle - 1) { nmi_pending = 0; do_interrupt(0xfffa, 0); return; }
     if (pc_lo || pc_hi) { if (cpu_cycle >= pc_lo && cpu_cycle <= pc_hi) fprintf(stderr, "PC %llu %04X A%02X X%02X Y%02X S%02X P%02X\n", (unsigned long long)cpu_cycle, c.pc, c.a, c.x, c.y, c.s, c.p); }
+    cov[c.pc] = 1;
     u8 op = fetch();
     int cc = op & 3, bbb = (op >> 2) & 7, aaa = op >> 5;
     static const int m01[8] = { 8, 2, 1, 5, 9, 3, 7, 6 };
@@ -272,7 +273,7 @@ static void cpu_step(void) {
     case 0x40: RD(c.pc); RD(0x100 | c.s); c.p = (pull() & ~FB) | FU; { u8 lo = pull(); u8 hi = pull(); c.pc = lo | hi << 8; } return;
     case 0x60: RD(c.pc); RD(0x100 | c.s); { u8 lo = pull(); u8 hi = pull(); c.pc = lo | hi << 8; } RD(c.pc); c.pc++; return;
     case 0x4c: { u8 lo = fetch(); u8 hi = fetch(); c.pc = lo | hi << 8; } return;
-    case 0x6c: { u8 lo = fetch(); u8 hi = fetch(); u16 p = lo | hi << 8; u8 l = RD(p), h = RD((p & 0xff00) | (u8)(p + 1)); c.pc = l | h << 8; } return;
+    case 0x6c: { u8 lo = fetch(); u8 hi = fetch(); u16 p = lo | hi << 8; u8 l = RD(p), h = RD((p & 0xff00) | (u8)(p + 1)); c.pc = l | h << 8; cov_jmp[c.pc] = 1; } return;
     case 0x08: RD(c.pc); push(c.p | FB | FU); return;
     case 0x28: RD(c.pc); RD(0x100 | c.s); c.p = (pull() & ~FB) | FU; return;
     case 0x48: RD(c.pc); push(c.a); return;
@@ -336,8 +337,21 @@ static void tracef(const char *k, u16 a, u8 val, int writing) {
 }
 static void hexline(const char *k, u8 *p, int n) { fprintf(tr, "%s %llu ", k, (unsigned long long)dump_count); for (int i = 0; i < n; i++) fprintf(tr, "%02X", p[i]); fputc('\n', tr); }
 static int  maxframes;
+static struct { long from, to; int mask, period, on; } scr[64]; static int nscr = -1;
+static void load_script(void) {
+    nscr = 0; const char *fn = getenv("INPUT_SCRIPT"); if (!fn) return;
+    FILE *f = fopen(fn, "r"); if (!f) { perror(fn); exit(1); } char line[256];
+    while (fgets(line, sizeof line, f)) { if (line[0] == '#' || line[0] == '\n') continue; long a, b; int m, p, o;
+        if (sscanf(line, "%ld %ld %x %d %d", &a, &b, &m, &p, &o) == 5 && nscr < 64) { scr[nscr].from = a; scr[nscr].to = b; scr[nscr].mask = m; scr[nscr].period = p; scr[nscr].on = o; nscr++; } }
+    fclose(f); nscr = nscr ? nscr : -2;
+}
+static u8 *padfile; static long padlen = -1;
 static void set_pad(void) {
-    long f = (long)dump_count;       /* same schedule as ref/mame_trace.lua (called at frame_done after increment) */
+    long f = (long)dump_count;
+    if (padlen == -1) { padlen = 0; const char *fn = getenv("INPUT_PAD"); if (fn) { FILE *pf = fopen(fn, "rb"); if (!pf) { perror(fn); exit(1); } padfile = malloc(1 << 20); padlen = fread(padfile, 1, 1 << 20, pf); fclose(pf); } }
+    if (padlen > 0) { pad_state[0] = f < padlen ? padfile[f] : 0; return; }
+    if (nscr == -1) load_script();
+    if (nscr > 0) { u8 b = 0; for (int i = 0; i < nscr; i++) if (f >= scr[i].from && f < scr[i].to && (scr[i].period == 0 || (f % scr[i].period) < scr[i].on)) b |= scr[i].mask; pad_state[0] = b; return; }       /* same schedule as ref/mame_trace.lua (called at frame_done after increment) */
     int s = input_frame_start; u8 b = 0;
     if (f >= s && f < s + 4) b |= 0x08;                                       /* Start */
     if (f >= s + 10 && (f % 7) != 0) b |= 0x01;                               /* A */
@@ -356,6 +370,7 @@ static void frame_hook(void) {
 }
 static void do_dump(void) {
     dump_pending = 0;
+    if (dump_count >= (u64)maxframes && getenv("COVERAGE")) { FILE *cf = fopen(getenv("COVERAGE"), "w"); for (int a = 0; a < 65536; a++) if (cov[a]) fprintf(cf, "X %04X\n", a); for (int a = 0; a < 65536; a++) if (cov_jmp[a]) fprintf(cf, "J %04X\n", a); fclose(cf); }
     if (pixf && ((dump_count >= 495 && dump_count <= 530) || (dump_count % 10 == 0 && dump_count >= 100))) {
         fputc(dump_count & 255, pixf); fputc(dump_count >> 8, pixf); fwrite(frame_pix, 1, sizeof frame_pix, pixf); }
     if (!tr) return;

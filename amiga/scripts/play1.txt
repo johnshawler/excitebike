@@ -1,0 +1,10 @@
+# input script: from to mask period on     (button pressed in frames f with from <= f < to and (f % period) < on; period 0 = always)
+# mask bits: A=01 B=02 Select=04 Start=08 Up=10 Down=20 Left=40 Right=80
+500 504 08 0 0
+560 564 08 0 0
+640 5000 01 0 0
+900 5000 10 97 6
+950 5000 20 131 5
+1000 5000 80 61 10
+1100 5000 40 53 8
+1200 5000 02 211 30
