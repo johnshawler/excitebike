@@ -38,6 +38,7 @@ static inline u32 processed(u32 c) { return (c * 16u) / 5u; }
 static inline u32 cycle_of_dot(u32 d) { return (5u * (d + 1u) + 15u) >> 4; }       /* cycle in which dot d is processed */
 
 static inline u8 *ntp(u16 a) { return &nt[(a >> 10) & 1][a & 0x3ff]; }                /* vertical mirroring */
+static void flush_pending(void);      /* render the logged line segments (the state they were logged with is still in place) */
 static u8 ppu_rd(u16 a) {
     a &= 0x3fff;
     if (a < 0x2000) return chr[a];
@@ -47,6 +48,7 @@ static u8 ppu_rd(u16 a) {
 static void ppu_wr(u16 a, u8 d) {
     a &= 0x3fff;
     if (a < 0x2000) return;
+    flush_pending();
     if (a < 0x3f00) { *ntp(a) = d; return; }
     a &= 0x1f; if ((a & 0x13) == 0x10) a &= 0x0f; pal[a] = d & 0x3f;
 }
@@ -93,7 +95,7 @@ static inline void tile_lo(int m) { tile[m].lo = ppu_rd(((ctrl & 0x10) ? 0x1000 
 static inline void tile_hi(int m) { tile[m].hi = ppu_rd(((ctrl & 0x10) ? 0x1000 : 0) + tile[m].id * 16 + ((line_vv >> 12) & 7) + 8); }
 
 /* dots [d0,d1) of a rendering line (visible or pre-render) with constant register state */
-static void line_segment(int scan, int d0, int d1) {
+static void draw_segment(int scan, int d0, int d1) {
     int vis = scan < 240, pre = scan == 311;
     int on = rend_on();
     /* the dots of this call are handled in dot order:  1..256 (tile fetch + pixels) | 256 y step | 257 x copy, sprites | 304 y copy | 321..336 prefetch */
@@ -146,6 +148,81 @@ static void line_segment(int scan, int d0, int d1) {
         }
     }
 }
+
+/* ------------------------------------------------------------------ deferred drawing
+ * The live model (timing, status flags, v evolution, sprite-0 hit) runs at every sync; the pixels are produced later by replaying the
+ * logged segments through draw_segment() (flush at the frame hook, and before any write that changes what drawing reads: NT, palette, OAM). */
+struct Seg { u16 d0, d1, scan, v, t; u8 finex, ctrl, mask; };
+#define SEGMAX 4096
+static struct Seg seglog[SEGMAX]; static int nseg;
+static u32 live_hit_dot = ~0u, replay_hit_dot = ~0u;
+static u16 lv_hh, lv_vv;
+u32 stat_flushes, stat_hit_mismatch;
+
+static void render_log(void) {
+    if (!nseg) return;
+    u16 sv = v, st = t; u8 sf = finex, sc = ctrl, sm = mask, ss = status;
+    for (int i = 0; i < nseg; i++) {
+        const struct Seg *r = &seglog[i];
+        v = r->v; t = r->t; finex = r->finex; ctrl = r->ctrl; mask = r->mask; status = 0;
+        draw_segment(r->scan, r->d0, r->d1);
+        if ((status & 0x40) && replay_hit_dot == ~0u) replay_hit_dot = 0x40000000u + r->scan * 341u + r->d0;   /* only used as "a hit was found" marker */
+    }
+    v = sv; t = st; finex = sf; ctrl = sc; mask = sm; status = ss;
+    nseg = 0; stat_flushes++;
+}
+/* does sprite 0 cover this line?  returns its row bits */
+static int spr0_row(int line, u8 *lo, u8 *hi) {
+    int h = (ctrl & 0x20) ? 16 : 8; int row = line - oam[0] - 1;
+    if (row < 0 || row >= h) return 0;
+    u8 tid = oam[1], attr = oam[2];
+    if (attr & 0x80) row = h - 1 - row;
+    u16 addr;
+    if (h == 8) addr = ((ctrl & 8) ? 0x1000 : 0) + tid * 16 + row;
+    else addr = ((tid & 1) ? 0x1000 : 0) + (tid & 0xfe) * 16 + (row & 8 ? 16 : 0) + (row & 7);
+    u8 l = chr[addr & 0x1fff], hh = chr[(addr + 8) & 0x1fff];
+    if (attr & 0x40) { u8 a = 0, b = 0; for (int i = 0; i < 8; i++) { a |= ((l >> i) & 1) << (7 - i); b |= ((hh >> i) & 1) << (7 - i); } l = a; hh = b; }
+    *lo = l; *hi = hh; return 1;
+}
+static inline int bgpx_live(int x) {
+    int sx = x + finex, m = sx >> 3, fx = sx & 7;
+    int coarse = (lv_hh & 31) + m; int ntx = ((lv_hh >> 10) & 1) ^ ((coarse >> 5) & 1); coarse &= 31;
+    int cy = (lv_vv >> 5) & 31, nty = (lv_vv >> 11) & 1;
+    u8 id = ppu_rd(0x2000 | (nty << 11) | (ntx << 10) | (cy << 5) | coarse);
+    u16 a = ((ctrl & 0x10) ? 0x1000 : 0) + id * 16 + ((lv_vv >> 12) & 7);
+    return (((chr[(a + 8) & 0x1fff] >> (7 - fx)) & 1) << 1) | ((chr[a & 0x1fff] >> (7 - fx)) & 1);
+}
+static int hit_x_found;
+static void hit_scan(int scan, int d0, int d1, int commit) {
+    hit_x_found = -1;
+    if ((mask & 0x18) != 0x18 || (status & 0x40)) return;
+    u8 lo, hi; if (!spr0_row(scan, &lo, &hi)) return;
+    int xa = d0 < 1 ? 0 : d0 - 1, xb = d1 > 257 ? 256 : d1 - 1; int sx = oam[3];
+    if (xa < sx) xa = sx; if (xb > sx + 8) xb = sx + 8;
+    for (int x = xa; x < xb; x++) {
+        if (x >= 255) break;
+        if (x < 8 && !((mask & 4) && (mask & 2))) continue;
+        int dx = x - sx; if (!(((hi >> (7 - dx)) & 1) | ((lo >> (7 - dx)) & 1))) continue;
+        if (bgpx_live(x)) { hit_x_found = x; if (commit) { status |= 0x40; live_hit_dot = (u32)(scan * 341 + x + 1); } return; }
+    }
+}
+static void live_segment(int scan, int d0, int d1) {
+    int vis = scan < 240, pre = scan == 311, on = rend_on();
+    if (nseg == SEGMAX) render_log();
+    { struct Seg *r = &seglog[nseg++]; r->d0 = d0; r->d1 = d1; r->scan = scan; r->v = v; r->t = t; r->finex = finex; r->ctrl = ctrl; r->mask = mask; }
+    if (!(on && (vis || pre))) return;
+    if (vis && d1 > 1) hit_scan(scan, d0, d1, 1);
+    if (d0 <= 256 && 256 < d1) inc_y();
+    if (d0 <= 257 && 257 < d1) {
+        v = (v & ~0x41f) | (t & 0x41f);
+        int n = (scan + 1) % 312;
+        if (n < 240) { int h = (ctrl & 0x20) ? 16 : 8, cnt = 0; for (int i = 0; i < 64; i++) { int row = n - oam[i * 4] - 1; if (row >= 0 && row < h) cnt++; } if (cnt > 8) status |= 0x20; }
+    }
+    if (pre && d0 <= 304 && 304 < d1) v = (v & ~0x7be0) | (t & 0x7be0);
+    if (d0 <= 321 && 321 < d1) { lv_hh = v & 0x41f; lv_vv = v & 0x7be0; }
+}
+
+static void flush_pending(void) { render_log(); }
 static void nmi_eval(u32 cyc);
 static int dump_pending;
 static void frame_hook(void) {
@@ -160,11 +237,11 @@ static void ppu_run_to(u32 P) {
         u32 line_start = dots_done - dot;
         u32 stop = line_start + 341; if (stop > P) stop = P;
         int d1 = (int)(stop - line_start);
-        if (scan == 240 && dot == 0) { frame_hook(); }
+        if (scan == 240 && dot == 0) { render_log(); live_hit_dot = ~0u; replay_hit_dot = ~0u; frame_hook(); }
         /* events with fixed dot positions that affect status flags */
         if (scan == 241 && dot <= 1 && 1 < d1) { if (!vbl_suppress) status |= 0x80; vbl_suppress = 0; nmi_eval(cycle_of_dot(line_start + 1)); }
         if (scan == 311 && dot <= 1 && 1 < d1) { status &= ~(0x80 | 0x40 | 0x20); nmi_eval(cycle_of_dot(line_start + 1)); }
-        if (scan < 240 || scan == 311) line_segment(scan, dot, d1);
+        if (scan < 240 || scan == 311) live_segment(scan, dot, d1);
         dots_done = stop;
     }
 }
@@ -247,7 +324,7 @@ u32 c_wr(u32 stamp, u32 addr, u32 val) {
         case 0: ctrl = d; t = (t & ~0xc00) | ((d & 3) << 10); nmi_eval(stamp + 1); break;
         case 1: mask = d; break;
         case 3: oamaddr = d; break;
-        case 4: oam[oamaddr++] = d; break;
+        case 4: flush_pending(); oam[oamaddr++] = d; break;
         case 5: if (!wlatch) { t = (t & ~0x1f) | (d >> 3); finex = d & 7; } else t = (t & ~0x73e0) | ((d & 7) << 12) | ((d >> 3) << 5); wlatch ^= 1; break;
         case 6: if (!wlatch) { t = (t & 0xff) | ((d & 0x3f) << 8); } else { t = (t & 0xff00) | d; v = t; } wlatch ^= 1; break;
         case 7: ppu_wr(v, d); v += (ctrl & 4) ? 32 : 1; break;
@@ -256,6 +333,7 @@ u32 c_wr(u32 stamp, u32 addr, u32 val) {
     else if (addr == 0x4014) {
         u16 base = (u16)(d << 8);
         u32 c = stamp + 1; extra = 1; if ((c + (u32)epoch_cycles) & 1) { c++; extra++; }
+        flush_pending();
         for (int i = 0; i < 256; i++) oam[(oamaddr + i) & 255] = base < 0x2000 ? ram[(base + i) & 0x7ff] : 0;
         extra += 512;
     }
@@ -271,3 +349,73 @@ void c_reset(void) {
     reschedule();
 }
 u32 c_frame_no(void) { return frame_no; }
+
+/* ------------------------------------------------------------------ fused busy-wait loops (exact closed forms, see tools/xl6502.py) */
+/* run the model ahead to just after the sprite-0 hit of this frame (never beyond it); returns 1 if the hit is now known */
+static int ahead_to_hit(void) {
+    while (!(status & 0x40)) {
+        u32 fpos = dots_done % FD; int scan = (int)(fpos / 341), dot = (int)(fpos % 341);
+        if (scan >= 240) return 0;
+        u32 line_start = dots_done - dot, stop = line_start + 341;
+        int on = rend_on();
+        if (on && dot < 257) {                              /* probe the rest of this line for the hit before committing the segment */
+            hit_scan(scan, dot, 341, 0);
+            if (hit_x_found >= 0) { u32 hd = line_start + hit_x_found + 1; if (hd + 1 < stop) stop = hd + 1; }
+        }
+        ppu_run_to(stop);
+    }
+    return 1;
+}
+/* "L: LDA $2002 / AND #mask / B<cc> L" executed from stamp T0 (cycle count at the LDA).  whilenz: loop while (v & mask) != 0 (BNE) else while == 0 (BEQ).
+ * limit: cycle of the next event the translated code has to poll for (the loop is not fused past it).  Returns the cycles consumed; *val = A at exit. */
+u32 c_fuse_poll(u32 T0, u32 maskv, u32 whilenz, u32 limit, u32 *val, u32 *exited) {
+    u32 j = 0; *exited = 0;
+    for (;;) {
+        u32 top = T0 + 9 * j;                              /* start of iteration j (LDA); reads at top+4; iterations take 9 cycles, the last one 8 */
+        if (limit != 0x7fffffffu && top + 6 >= limit) return 9 * j;      /* an event is due inside this iteration: the translated code runs it instruction by instruction */
+        u32 v = c_rd(top + 4, 0x2002) & maskv;
+        int exitp = whilenz ? (v == 0) : (v != 0);
+        if (exitp) { *val = v; *exited = 1; return 9 * j + 8; }
+        u32 dotE = ~0u;                                    /* dot at which the awaited change happens */
+        if (maskv == 0x40 && !whilenz) { if (ahead_to_hit()) dotE = (dots_done - dots_done % FD) + live_hit_dot; }
+        else if (maskv == 0x40 && whilenz) { u32 fi = dots_done / FD; dotE = fi * FD + 311 * 341 + 1; if (dotE < dots_done) dotE += FD; }
+        else if (maskv == 0x80 && !whilenz) { u32 fi = dots_done / FD; dotE = fi * FD + 241 * 341 + 1; if (dotE < dots_done) dotE += FD; }
+        u32 jn = j + 1;
+        if (dotE != ~0u) {
+            u32 target = cycle_of_dot(dotE);                 /* first read stamp that sees the change */
+            if (target > top + 4 + 9) jn = (target - T0 - 4 + 8) / 9;
+        }
+        if (limit != 0x7fffffffu) { u32 maxj = limit > T0 + 7 ? (limit - T0 - 7) / 9 + 1 : 0; if (jn > maxj) jn = maxj > j + 1 ? maxj : j + 1; }
+        j = jn;
+    }
+}
+/* nested counting delay loop  LDY #n / DEY / BNE -3 / DEX / BNE -7  with X in x: cycles consumed (X ends 0, Y ends 0) */
+u32 c_delay_cycles(u32 x, u32 n) { if (x == 0) x = 256; if (n == 0) n = 256; return x * (5 * n + 6) - 1; }
+
+/* main-thread idle loop  C1D8: JSR D326 (64-bit shift register RNG at $18-$1F) / LDA $48 / BMI C1D8 / BEQ C1D8 : whole iterations while the loop condition holds
+ * and no event is due.  S = 6502 stack pointer.  Returns the cycles consumed (0: nothing fused); rt.idle_ccr = ccr after the last fused iteration, rt.idle_a = A. */
+u32 c_idle(u32 now, u32 limit, u32 S) {
+    u32 used = 0; u8 a = 0; u32 c = 0, n = 0;
+    for (;;) {
+        u8 t48 = ram[0x48];
+        if (!(t48 & 0x80) && t48 != 0) break;                          /* loop would exit */
+        u8 b18 = ram[0x18], b19 = ram[0x19];
+        u8 x = (b18 & 2) ^ (b19 & 2);
+        u32 cyc = 6 + 3 + 2 + 3 + 3 + 2 + 3 + 2 + (x ? 4 : 3) + 40 + 6 + 3 + ((t48 & 0x80) ? 3 : 5);
+        if (limit != 0x7fffffffu && now + used + cyc >= limit) break;   /* an event is due before this iteration is over */
+        ram[0] = b18 & 2;
+        u32 cy = x ? 1 : 0;
+        for (int i = 0x18; i < 0x20; i++) { u32 nc = ram[i] & 1; ram[i] = (u8)((ram[i] >> 1) | (cy << 7)); cy = nc; }
+        c = cy; a = t48; used += cyc; n++;
+    }
+    if (n) {
+        ram[0x100 + (S & 255)] = 0xC1; ram[0x100 + ((S - 1) & 255)] = 0xDA;   /* the JSR's return address stays in the stack page */
+        rt.idle_a = a; rt.idle_ccr = (a & 0x80 ? 8 : 0) | (a == 0 ? 4 : 0) | (c ? 0x11 : 0);
+    }
+    return used;
+}
+
+u32 c_fuse_poll_w(u32 T0, u32 maskv, u32 whilenz, u32 limit) {
+    u32 val, exited; u32 cyc = c_fuse_poll(T0, maskv, whilenz, limit, &val, &exited);
+    rt.fuse_val = val; rt.fuse_exited = exited; return cyc;
+}

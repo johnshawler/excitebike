@@ -86,7 +86,7 @@ class Gen:
         s.e('move.w %ccr,%d6'); s.e('andi.w #0x0c,%d6'); s.e('andi.w #0x11,%d5'); s.e('or.w %d5,%d6'); s.e('move.w %d6,%ccr')
 
 class Translator:
-    def __init__(s, prg, cfg, model='nes', ind_targets=(), trace=False):
+    def __init__(s, prg, cfg, model='nes', ind_targets=(), trace=False, fuse=True):
         s.trace = trace
         s.prg = prg; s.model = model; s.cfg = cfg
         s.ins = {}
@@ -102,6 +102,9 @@ class Translator:
             if i.mn in UNSUPPORTED: raise ValueError('unsupported %s at %04X' % (i.mn, i.addr))
             if i.mode == 'rel': s.leaders.add(i.target())
             if i.mn in ('jsr', 'jmp') and i.mode == 'abs': s.leaders.add(i.target())
+        s.fuse = fuse
+        IDLE = bytes.fromhex('2026d3a54830f9f0f7'); RNG = bytes.fromhex('a5182902850 0a5192902450018f00138661866196 61a661b661c661d661e661f60'.replace(' ', ''))
+        s.idle_ok = bytes(prg[0x1d8:0x1e1]) == IDLE and bytes(prg[0x1326:0x1326 + len(RNG)]) == RNG
         s.reach(); s.liveness()
     # ------------------------------------------------------------ analyses
     def succs(s, i):
@@ -333,6 +336,45 @@ class Translator:
             g.e('lea 1(%a2),%a2'); g.e('move.b (%a2),%d0'); g.cloc.discard('C'); return
         raise NotImplementedError(mn)
 
+    # ------------------------------------------------------------ fused busy-wait loops (exact closed forms in rt/nes_rt.c, verified by trace equality)
+    def fusion_for(s, blk):
+        a = blk[0]
+        if len(blk) == 3 and a.mn == 'lda' and a.mode == 'abs' and a.arg == 0x2002 and blk[1].mn == 'and' and blk[1].mode == 'imm' \
+                and blk[2].mn in ('bne', 'beq') and blk[2].target() == a.addr:
+            m, nz = blk[1].arg, blk[2].mn == 'bne'
+            if (m == 0x40) or (m == 0x80 and not nz): return ('poll', m, nz)
+        if len(blk) == 1 and a.mn == 'ldy' and a.mode == 'imm' and a.addr not in s.main:
+            i1, i2, i3, i4 = (s.ins.get(a.addr + k) for k in (2, 3, 5, 6))
+            if i1 and i2 and i3 and i4 and i1.mn == 'dey' and i2.mn == 'bne' and i2.target() == i1.addr and i3.mn == 'dex' and i4.mn == 'bne' and i4.target() == a.addr:
+                return ('delay', a.arg)
+        return None
+    def emit_fused(s, g, blk, fz, li, flush, out):
+        a = blk[0]
+        if fz[0] == 'poll':
+            _, m, nz = fz
+            if li: g.e('move.w %ccr,-(%sp)')
+            g.e('move.l #%s,%%d4' % hx(m)); g.e('moveq #%d,%%d5' % (1 if nz else 0))
+            g.e('move.l ev_due(%a3),%d6' if flush else 'move.l #0x7fffffff,%d6')
+            g.e('jsr rt_fuse_poll'); g.e('tst.l %d5')
+            ok = '.F%04X' % a.addr
+            g.e('bne.s %s' % ok)
+            if li: g.e('move.w (%sp)+,%ccr')
+            g.e('jmp %s_n' % s.lbl(a.addr)); g.lab(ok)
+            if li: g.e('move.w (%sp)+,%ccr')
+            g.e('move.b %d6,%d0'); g.cloc.discard('C')
+            nxt = a.addr + 7
+            if s.live_in.get(nxt, 0) & FC: g.c_canon()
+            g.e('jmp %s' % s.lbl(nxt))
+            return
+        if fz[0] == 'delay':
+            n = fz[1] or 256
+            if li: g.e('move.w %ccr,%d5')
+            g.e('move.l %d1,%d4'); g.e('bne.s .D%04X' % a.addr); g.e('move.w #256,%d4'); g.lab('.D%04X' % a.addr)
+            g.e('mulu.w #%d,%%d4' % (5 * n + 6)); g.e('lea -1(%a5,%d4.l),%a5')
+            if li: g.e('move.w %d5,%ccr')
+            g.e('moveq #0,%d1'); g.e('moveq #0,%d2'); g.cloc.discard('C')
+            g.e('jmp %s' % s.lbl(a.addr + 8))
+            return
     # ------------------------------------------------------------ whole program
     def block_ranges(s):
         addrs = sorted(s.ins); blocks = []; cur = None
@@ -353,8 +395,28 @@ class Translator:
         for blk in blocks:
             first = blk[0]
             flush = first.addr in s.main
-            g = Gen('b%04X_' % first.addr); out.append(s.lbl(first.addr) + ':')
             L = sum(i.base for i in blk)
+            fz = s.fusion_for(blk) if s.fuse else None
+            entry_label = s.lbl(first.addr)
+            if fz:
+                li0 = s.live_in.get(first.addr, 0)
+                gf = Gen('f%04X_' % first.addr); out.append(entry_label + ':')
+                if li0 & FC: gf.c_set('P', {'X', 'C'})
+                if flush:                                      # main thread: the usual poll in front of the fused code
+                    lab = entry_label + '_fp'; sv = bool(li0)
+                    if sv: gf.e('move.w %ccr,%d5')
+                    gf.e('cmpa.l ev_due(%a3),%a5'); gf.e('bcs.s %s_k' % lab)
+                    if not sv: gf.e('moveq #0,%d5')
+                    gf.e('move.w #%s,%%d4' % hx(first.addr)); gf.e('jsr rt_nmi_deliver')
+                    if sv: gf.e('bra.s %s' % lab)
+                    gf.lab(lab + '_k')
+                    if sv: gf.e('move.w %d5,%ccr')
+                    gf.lab(lab)
+                s.emit_fused(gf, blk, fz, li0, flush, out)
+                out += gf.out
+                if fz[0] == 'delay': continue
+                entry_label = entry_label + '_n'                 # the translated loop (taken when the fused code declines: an event is due inside the next iteration)
+            g = Gen('b%04X_' % first.addr); out.append(entry_label + ':')
             if s.trace: g.e('pea %s' % hx(first.addr)); g.e('jsr rt_dbg_block'); g.e('addq.l #4,%sp')
             if not flush and L: g.e('lea %d(%%a5),%%a5' % L)
             if s.live_in.get(first.addr, 0) & FC: g.c_set('P', {'X', 'C'})
@@ -375,6 +437,7 @@ class Translator:
                     g.lab(lab + '_k')
                     if sv: g.e('move.w %d5,%ccr')
                     g.lab(lab)
+                    if s.fuse and i.addr == 0xC1D8 and s.idle_ok: g.e('jsr rt_idle_fuse')
                     st = (lambda k: k)
                 else:
                     st = (lambda k, soff=soff, L=L: soff + k - L)
@@ -436,14 +499,14 @@ class Translator:
             adv(i.base); g.e('jmp rt_rti'); return
         s.insn(g, i, lo, li, st)
 
-def build(romfile, cfgfile, seedsfile, model='nes', trace=False):
+def build(romfile, cfgfile, seedsfile, model='nes', trace=False, fuse=True):
     prg = open(romfile, 'rb').read()[16:16 + 16384]
     cfg = json.load(open(cfgfile))
     ind = [int(l, 16) for l in open(seedsfile) if l.strip()]
-    return Translator(prg, cfg, model, [t for t in ind if t in set(cfg['starts'])], trace)
+    return Translator(prg, cfg, model, [t for t in ind if t in set(cfg['starts'])], trace, fuse)
 
 if __name__ == '__main__':
-    t = build(sys.argv[1], sys.argv[2], sys.argv[3], trace=('--trace' in sys.argv))
+    t = build(sys.argv[1], sys.argv[2], sys.argv[3], trace=('--trace' in sys.argv), fuse=('--nofuse' not in sys.argv))
     text, polled = t.emit_program()
     open(sys.argv[4], 'w').write(text)
     print('main-thread instructions %d, nmi %d, shared %d; polled instructions %d' % (len(t.main), len(t.nmi), len(t.main & t.nmi), polled), file=sys.stderr)

@@ -173,3 +173,47 @@ rt_dbg_block:
 	movem.l (%sp)+,%d0-%d7/%a0-%a6
 	move.w (%sp)+,%ccr
 	rts
+
+| fused status-poll loop (see xl6502.py emit_fused): d4 = mask, d5 = 1 if the loop continues while (v & mask) != 0, d6 = event limit (ev_due or 0x7fffffff).
+| returns: a5 advanced, d6 = value read, d5 = 1 if the loop ended (0: the translated loop has to run again from its top)
+	.globl rt_fuse_poll
+rt_fuse_poll:
+	movem.l %d0-%d1/%a0-%a1,-(%sp)
+	move.l %d6,-(%sp)
+	move.l %d5,-(%sp)
+	move.l %d4,-(%sp)
+	move.l %a5,-(%sp)
+	jsr c_fuse_poll_w
+	lea 16(%sp),%sp
+	adda.l %d0,%a5
+	move.l 16(%a3),%d6
+	move.l 20(%a3),%d5
+	movem.l (%sp)+,%d0-%d1/%a0-%a1
+	rts
+
+| fused idle loop at C1D8 (main thread, called right after the poll): flags are canonical on entry and on exit
+	.globl rt_idle_fuse
+rt_idle_fuse:
+	move.w %ccr,%d4
+	movem.l %d0-%d1/%a0-%a1,-(%sp)
+	move.l %a2,%d5
+	sub.l %a0,%d5
+	sub.w #0x100,%d5
+	and.l #0xff,%d5
+	move.l %d5,-(%sp)
+	move.l 0(%a3),-(%sp)
+	move.l %a5,-(%sp)
+	jsr c_idle
+	lea 12(%sp),%sp
+	tst.l %d0
+	beq.s 9f
+	adda.l %d0,%a5
+	move.l 8(%a3),%d6
+	move.l 12(%a3),%d5
+	movem.l (%sp)+,%d0-%d1/%a0-%a1
+	move.b %d6,%d0
+	move.w %d5,%ccr
+	rts
+9:	movem.l (%sp)+,%d0-%d1/%a0-%a1
+	move.w %d4,%ccr
+	rts
