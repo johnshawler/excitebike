@@ -249,6 +249,7 @@ static void branch(int cond) {
     int8_t o = (int8_t)fetch();
     if (cond) { RD(c.pc); u16 n = c.pc + o; if ((n & 0xff00) != (c.pc & 0xff00)) RD((c.pc & 0xff00) | (n & 0xff)); c.pc = n; }
 }
+static unsigned long long pc_lo, pc_hi;
 static int inst_end_nmi_check;
 static u64 inst_start_cycle;
 static void do_interrupt(u16 vec, int brk) {
@@ -261,6 +262,7 @@ static u8 rdv(u16 a) { return a >= 0xc000 ? prg[a & 0x3fff] : 0; }
 static void cpu_step(void) {
     /* interrupt sampling: an NMI edge that occurred before the last cycle of the previous instruction is taken now */
     if (nmi_pending && nmi_edge_cycle <= cpu_cycle - 1) { nmi_pending = 0; do_interrupt(0xfffa, 0); return; }
+    if (pc_lo || pc_hi) { if (cpu_cycle >= pc_lo && cpu_cycle <= pc_hi) fprintf(stderr, "PC %llu %04X A%02X X%02X Y%02X S%02X P%02X\n", (unsigned long long)cpu_cycle, c.pc, c.a, c.x, c.y, c.s, c.p); }
     u8 op = fetch();
     int cc = op & 3, bbb = (op >> 2) & 7, aaa = op >> 5;
     static const int m01[8] = { 8, 2, 1, 5, 9, 3, 7, 6 };
@@ -345,10 +347,15 @@ static void set_pad(void) {
     if (f >= s + 120 && (f % 3) == 0) b |= 0x02;                              /* B */
     pad_state[0] = b;
 }
-static FILE *pixf;
+static FILE *pixf; static int dump_pending;
+static void do_dump(void);
 static void frame_hook(void) {
     dump_count++;
     set_pad();
+    dump_pending = 1;
+}
+static void do_dump(void) {
+    dump_pending = 0;
     if (pixf && ((dump_count >= 495 && dump_count <= 530) || (dump_count % 10 == 0 && dump_count >= 100))) {
         fputc(dump_count & 255, pixf); fputc(dump_count >> 8, pixf); fwrite(frame_pix, 1, sizeof frame_pix, pixf); }
     if (!tr) return;
@@ -396,6 +403,7 @@ int main(int argc, char **argv) {
     if (hdr[4] != 1 || hdr[5] != 1 || (hdr[6] >> 4)) { fprintf(stderr, "only NROM-128\n"); return 1; }
     vmirror = hdr[6] & 1;
     if (fread(prg, 1, 16384, f) != 16384 || fread(chr, 1, 8192, f) != 8192) return 1; fclose(f);
+    if (getenv("PCTRACE")) sscanf(getenv("PCTRACE"), "%llu,%llu", &pc_lo, &pc_hi);
     maxframes = atoi(argv[2]); input_frame_start = atoi(argv[3]);
     if (argc > 4) tr = fopen(argv[4], "w");
     if (getenv("PIX_OUT")) pixf = fopen(getenv("PIX_OUT"), "wb");
@@ -405,6 +413,6 @@ int main(int argc, char **argv) {
     { const char *e = getenv("PPU_PHASE"); if (e) { int p = atoi(e); ppu_units = p % 5; dot = p / 5; } }
     for (int i = 0; i < 5; i++) cyc();
     { u8 lo = rdv(0xfffc), hi = rdv(0xfffd); c.pc = lo | hi << 8; cyc(); cyc(); }
-    for (;;) cpu_step();
+    for (;;) { cpu_step(); if (dump_pending) do_dump(); }
     return 0;
 }

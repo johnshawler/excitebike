@@ -86,7 +86,8 @@ class Gen:
         s.e('move.w %ccr,%d6'); s.e('andi.w #0x0c,%d6'); s.e('andi.w #0x11,%d5'); s.e('or.w %d5,%d6'); s.e('move.w %d6,%ccr')
 
 class Translator:
-    def __init__(s, prg, cfg, model='nes', ind_targets=()):
+    def __init__(s, prg, cfg, model='nes', ind_targets=(), trace=False):
+        s.trace = trace
         s.prg = prg; s.model = model; s.cfg = cfg
         s.ins = {}
         for a in cfg['starts']:
@@ -101,7 +102,7 @@ class Translator:
             if i.mn in UNSUPPORTED: raise ValueError('unsupported %s at %04X' % (i.mn, i.addr))
             if i.mode == 'rel': s.leaders.add(i.target())
             if i.mn in ('jsr', 'jmp') and i.mode == 'abs': s.leaders.add(i.target())
-        s.liveness(); s.reach()
+        s.reach(); s.liveness()
     # ------------------------------------------------------------ analyses
     def succs(s, i):
         if i.mode == 'rel': return [i.target()] if i.addr in s.always else [i.target(), i.nxt]
@@ -125,6 +126,7 @@ class Translator:
                         lo = 0
                         for t in s.succs(i): lo |= live.get(t, 0)
                     li = BRANCH_FLAG.get(i.mn, 0) | USES.get(i.mn, 0) | (lo & ~DEFS.get(i.mn, 0))
+                    if a in s.main: li |= FN | FZ | FC          # an NMI can arrive here: the pushed P must be exact
                 if li != live[a]: live[a] = li; changed = True
         s.live_in = live; s.rts_out = rts_out
     def live_out(s, i):
@@ -215,11 +217,14 @@ class Translator:
             if s.model == 'flat': return '(%a0,%d4.l)', None
             return None, ('gen', None)
         raise NotImplementedError(mode)
-    def io_call(s, g, io, stamp, read):
+    def io_call(s, g, io, stamp, read, li=0):
+        """call a runtime stub; the stub clobbers the ccr, so flags that are live into the instruction are kept on the stack"""
         kind, a = io
+        if li: g.e('move.w %ccr,-(%sp)')
         g.e(('moveq #%d,%%d5' % stamp) if -128 <= stamp <= 127 else ('move.l #%d,%%d5' % stamp))
         if kind == 'gen': g.e('jsr rt_%s_gen' % ('rd' if read else 'wr'))
         else: g.e('jsr rt_%s_%04x' % ('rd' if read else 'wr', (0x2000 + (a & 7)) if kind == 'ppu' else a))
+        if li: g.e('move.w (%sp)+,%ccr')
     # ------------------------------------------------------------ instruction translation
     def insn(s, g, i, lo, live_in, stamp):
         """Translate one non-control instruction.  lo = flags live after it, live_in = flags live before it,
@@ -231,15 +236,13 @@ class Translator:
         if mn in ('lda', 'ldx', 'ldy'):
             dst = {'lda': '%d0', 'ldx': '%d1', 'ldy': '%d2'}[mn]
             ea, io = s.operand(g, i, 'r', live_in)
-            if io: s.io_call(g, io, stamp(kr), True); ea = '%d6'
+            if io: s.io_call(g, io, stamp(kr), True, live_in); ea = '%d6'
             g.e('move.b %s,%s' % (ea, dst)); g.cloc.discard('C'); return
         if mn in STORE:
             src = {'sta': '%d0', 'stx': '%d1', 'sty': '%d2'}[mn]
             ea, io = s.operand(g, i, 'w', live_in)
             if io:
-                if lo: g.e('move.w %ccr,-(%sp)')
-                g.e('move.b %s,%%d6' % src); s.io_call(g, io, stamp(kw), False)
-                if lo: g.e('move.w (%sp)+,%ccr')
+                g.e('move.b %s,%%d6' % src); s.io_call(g, io, stamp(kw), False, live_in)
                 return
             if clob_nz or c_in_cbit_only: g.wrap(['move.b %s,%s' % (src, ea)])
             else: g.e('move.b %s,%s' % (src, ea)); g.cloc.discard('C')
@@ -273,7 +276,7 @@ class Translator:
             return
         if mn in ('and', 'ora', 'eor'):
             ea, io = s.operand(g, i, 'r', live_in)
-            if io: s.io_call(g, io, stamp(kr), True); ea = '%d6'
+            if io: s.io_call(g, io, stamp(kr), True, live_in); ea = '%d6'
             if mn == 'eor':
                 if not ea.startswith('%d'): g.e('move.b %s,%%d6' % ea); ea = '%d6'
                 g.e('eor.b %s,%%d0' % ea)
@@ -282,7 +285,7 @@ class Translator:
         if mn in ('cmp', 'cpx', 'cpy'):
             r = {'cmp': '%d0', 'cpx': '%d1', 'cpy': '%d2'}[mn]
             ea, io = s.operand(g, i, 'r', live_in)
-            if io: s.io_call(g, io, stamp(kr), True); ea = '%d6'
+            if io: s.io_call(g, io, stamp(kr), True, live_in); ea = '%d6'
             g.e('cmp.b %s,%s' % (ea, r)); g.c_set('N', {'C'}); return
         if mn in ('adc', 'sbc'):
             if mn == 'adc' and g.cpol == 'N' or mn == 'sbc' and g.cpol == 'P': g.c_flip()
@@ -295,7 +298,7 @@ class Translator:
             g.e('%s.b %s,%%d0' % ('addx' if mn == 'adc' else 'subx', sr)); g.c_set('P' if mn == 'adc' else 'N', {'X', 'C'}); return
         if mn == 'bit':
             ea, io = s.operand(g, i, 'r', live_in)
-            if io: s.io_call(g, io, stamp(kr), True); ea = '%d6'
+            if io: s.io_call(g, io, stamp(kr), True, live_in); ea = '%d6'
             elif not ea.startswith('%d'): g.e('move.b %s,%%d6' % ea); ea = '%d6'
             g.e('move.b %s,%%d5' % ea); g.e('and.b %d0,%d6'); g.e('move.w %ccr,%d4'); g.e('andi.w #0x14,%d4')
             g.e('andi.b #0x80,%d5'); g.e('lsr.b #4,%d5'); g.e('or.w %d5,%d4'); g.e('move.w %d4,%ccr'); g.cloc.discard('C'); return
@@ -343,7 +346,7 @@ class Translator:
         return blocks
     def lbl(s, a): return 'L_%04X' % a
     def emit_program(s):
-        out = ['\t.text', '\t.even']
+        out = ['\t.equ ev_due,0', '\t.text', '\t.even', '\t.globl L_C184', '\t.globl L_C23B']
         stubs = []
         blocks = s.block_ranges()
         polled = 0
@@ -352,6 +355,7 @@ class Translator:
             flush = first.addr in s.main
             g = Gen('b%04X_' % first.addr); out.append(s.lbl(first.addr) + ':')
             L = sum(i.base for i in blk)
+            if s.trace: g.e('pea %s' % hx(first.addr)); g.e('jsr rt_dbg_block'); g.e('addq.l #4,%sp')
             if not flush and L: g.e('lea %d(%%a5),%%a5' % L)
             if s.live_in.get(first.addr, 0) & FC: g.c_set('P', {'X', 'C'})
             soff = 0
@@ -363,12 +367,14 @@ class Translator:
                     if li & FC: g.c_canon()
                     lab = s.lbl(i.addr) + '_p'
                     sv = bool(li)
-                    if i.addr != first.addr: g.lab(s.lbl(i.addr) + ':') if i.addr in s.leaders else None
                     if sv: g.e('move.w %ccr,%d5')
-                    g.e('cmpa.l nmi_due(%a3),%a5'); g.e('bcc.w %s_n' % lab)
+                    g.e('cmpa.l ev_due(%a3),%a5'); g.e('bcs.s %s_k' % lab)
+                    if not sv: g.e('moveq #0,%d5')
+                    g.e('move.w #%s,%%d4' % hx(i.addr)); g.e('jsr rt_nmi_deliver')
+                    if sv: g.e('bra.s %s' % lab)
+                    g.lab(lab + '_k')
                     if sv: g.e('move.w %d5,%ccr')
                     g.lab(lab)
-                    stubs.append('%s_n:\n\tmove.w #%s,%%d4\n\tjsr rt_nmi_deliver\n\tbra.w %s' % (lab, hx(i.addr), lab))
                     st = (lambda k: k)
                 else:
                     st = (lambda k, soff=soff, L=L: soff + k - L)
@@ -381,6 +387,9 @@ class Translator:
                 if s.live_in.get(last.nxt, 0) & FC: g.c_canon()
             out += g.out
         out += stubs
+        out += ['\t.data', '\t.even', '\t.globl dispatch_tab', 'dispatch_tab:']
+        for a in range(0xc000, 0x10000):
+            out.append('\t.long %s' % (s.lbl(a) if a in s.ins and a in s.leaders else 'rt_bad_jump'))
         return '\n'.join(out) + '\n', polled
     def control_or_insn(s, g, i, lo, li, st, flush, stubs, blk):
         mn = i.mn
@@ -392,14 +401,17 @@ class Translator:
                 g.c_need_c(); cond = ('cs' if mn == 'bcs' else 'cc') if g.cpol == 'P' else ('cc' if mn == 'bcs' else 'cs')
             t = i.target(); pen = 1 + (1 if (t & 0xff00) != (i.nxt & 0xff00) else 0)
             sn = g.snap(); adv(i.base)
-            lab = '.T%04X' % i.addr
-            g.e('b%s.w %s' % (cond, lab))
-            if i.addr in s.always: g.e('jsr rt_bad_flow')           # hint '; jmp' of the disassembly: must never fall through
-            elif s.live_in.get(i.nxt, 0) & FC: g.c_canon()
+            inv = {"eq": "ne", 'ne': 'eq', 'pl': 'mi', 'mi': 'pl', 'cs': 'cc', 'cc': 'cs'}[cond]
+            lab = '.N%04X' % i.addr
+            g.e('b%s.s %s' % (inv, lab))
             tg = Gen('t%04X_' % i.addr); tg.restore(sn)
             if s.live_in.get(t, 0) & FC: tg.c_canon()
             tg.e('lea %d(%%a5),%%a5' % pen); tg.e('jmp %s' % s.lbl(t))
-            stubs.append(lab + ':\n' + '\n'.join(tg.out)); return
+            g.out += tg.out
+            g.lab(lab)
+            if i.addr in s.always: g.e('jsr rt_bad_flow')           # hint '; jmp' of the disassembly: must never fall through
+            elif s.live_in.get(i.nxt, 0) & FC: g.c_canon()
+            return
         if mn == 'jmp':
             adv(i.base)
             if i.mode == 'abs':
@@ -424,14 +436,14 @@ class Translator:
             adv(i.base); g.e('jmp rt_rti'); return
         s.insn(g, i, lo, li, st)
 
-def build(romfile, cfgfile, seedsfile, model='nes'):
+def build(romfile, cfgfile, seedsfile, model='nes', trace=False):
     prg = open(romfile, 'rb').read()[16:16 + 16384]
     cfg = json.load(open(cfgfile))
     ind = [int(l, 16) for l in open(seedsfile) if l.strip()]
-    return Translator(prg, cfg, model, [t for t in ind if t in set(cfg['starts'])])
+    return Translator(prg, cfg, model, [t for t in ind if t in set(cfg['starts'])], trace)
 
 if __name__ == '__main__':
-    t = build(sys.argv[1], sys.argv[2], sys.argv[3])
+    t = build(sys.argv[1], sys.argv[2], sys.argv[3], trace=('--trace' in sys.argv))
     text, polled = t.emit_program()
     open(sys.argv[4], 'w').write(text)
     print('main-thread instructions %d, nmi %d, shared %d; polled instructions %d' % (len(t.main), len(t.nmi), len(t.main & t.nmi), polled), file=sys.stderr)
