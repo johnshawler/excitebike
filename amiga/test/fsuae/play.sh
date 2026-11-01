@@ -1,7 +1,10 @@
-xdotool key Return; sleep 3
-xdotool key Return; sleep 6
+hold() { xdotool keydown $1; sleep ${2:-0.6}; xdotool keyup $1; }
+hold Return; sleep 8
+hold Return; sleep 8
+hold Return; sleep 15
+xdotool keydown z
 full a1
-xdotool keydown Control_R; sleep 10
+sleep 8
 full a2
-sleep 10
+sleep 12
 full a3

@@ -17,15 +17,15 @@ u8 *fr_bmp;                                /* FR_ROWS * FR_ROWB bytes, set by th
 u8 *fr_priv;                               /* FR_MAXPRIV private lines of FR_ROWB bytes each */
 struct FrBand { u16 line0, nlines, x0, row0; u8 *base; };
 struct FrBand fr_bands[FR_MAXBANDS]; int fr_nbands;
-static u8 fr_cell_dirty[30 * 64]; static u8 fr_all_dirty = 1; static u8 fr_bmp_table = 0xff;
+static u8 fr_cell_dirty[30 * 64]; static u8 fr_row_dirty[30]; static u8 fr_all_dirty = 1; static u8 fr_bmp_table = 0xff;
 static u8 fr_have_bmp;
 u32 fr_stat_ok, fr_stat_fallback, fr_stat_cells;
 
 /* ---- background cells ------------------------------------------------------------------------------------------------ */
 static void fr_nt_write(u16 a) {                       /* a: PPU address $2000-$3EFF */
     int nti = (a >> 10) & 1, off = a & 0x3ff;
-    if (off < 960) fr_cell_dirty[(off >> 5) * 64 + nti * 32 + (off & 31)] = 1;
-    else { int o = off - 960, r0 = (o >> 3) * 4, c0 = (o & 7) * 4; for (int r = r0; r < r0 + 4 && r < 30; r++) for (int c = c0; c < c0 + 4; c++) fr_cell_dirty[r * 64 + nti * 32 + c] = 1; }
+    if (off < 960) { fr_cell_dirty[(off >> 5) * 64 + nti * 32 + (off & 31)] = 1; fr_row_dirty[off >> 5] = 1; }
+    else { int o = off - 960, r0 = (o >> 3) * 4, c0 = (o & 7) * 4; for (int r = r0; r < r0 + 4 && r < 30; r++) { fr_row_dirty[r] = 1; for (int c = c0; c < c0 + 4; c++) fr_cell_dirty[r * 64 + nti * 32 + c] = 1; } }
 }
 static void fr_cell_draw(int col, int row) {
     int nti = col >> 5, cx = col & 31;
@@ -42,8 +42,8 @@ static void fr_cell_draw(int col, int row) {
 }
 static void fr_cells_update(u8 table) {
     if (!fr_have_bmp || table != fr_bmp_table) { fr_bmp_table = table; fr_all_dirty = 1; fr_have_bmp = 1; }
-    if (fr_all_dirty) { for (int r = 0; r < 30; r++) for (int c = 0; c < 64; c++) fr_cell_draw(c, r); memset(fr_cell_dirty, 0, sizeof fr_cell_dirty); fr_all_dirty = 0; return; }
-    for (int r = 0; r < 30; r++) for (int c = 0; c < 64; c++) if (fr_cell_dirty[r * 64 + c]) { fr_cell_dirty[r * 64 + c] = 0; fr_cell_draw(c, r); }
+    if (fr_all_dirty) { for (int r = 0; r < 30; r++) for (int c = 0; c < 64; c++) fr_cell_draw(c, r); memset(fr_cell_dirty, 0, sizeof fr_cell_dirty); memset(fr_row_dirty, 0, sizeof fr_row_dirty); fr_all_dirty = 0; return; }
+    for (int r = 0; r < 30; r++) { if (!fr_row_dirty[r]) continue; fr_row_dirty[r] = 0; for (int c = 0; c < 64; c++) if (fr_cell_dirty[r * 64 + c]) { fr_cell_dirty[r * 64 + c] = 0; fr_cell_draw(c, r); } }
 }
 
 /* ---- per-line description ---------------------------------------------------------------------------------------------- */
@@ -53,6 +53,12 @@ static u8 fr_rev[256]; static u8 fr_rev_init;
 static u8 fr_mask_spr_left, fr_spr_table;
 
 /* build fr_line[] from the segment log; returns 0 if this frame needs the exact renderer */
+static inline u16 fr_vinc(u16 vv) {
+    if ((vv & 0x7000) != 0x7000) return vv + 0x1000;
+    vv &= ~0x7000; int y = (vv & 0x3e0) >> 5;
+    if (y == 29) { y = 0; vv ^= 0x800; } else if (y == 31) y = 0; else y++;
+    return (u16)((vv & ~0x3e0) | (y << 5));
+}
 static int fr_build(const struct Seg *log, int n) {
     static u8 seen[240];
     memset(seen, 0, sizeof seen);
@@ -65,6 +71,18 @@ static int fr_build(const struct Seg *log, int n) {
         if (!have_first) { have_first = 1; ctrl0 = r->ctrl; fr_mask_spr_left = r->mask & 4; }
         if ((r->ctrl & 0x38) != (ctrl0 & 0x38) || (r->mask & 4) != fr_mask_spr_left) return 0;
         if (r->ctrl & 0x20) return 0;                                    /* 8x16 sprites */
+        if (r->nl) {                                                     /* run of complete lines: tile coordinates evolve by the vertical increment */
+            u16 hh = r->v & 0x41f, vv = r->v & 0x7be0, hhn = r->t & 0x41f;
+            for (int k = 0; k < r->nl; k++) {
+                int line = r->scan + k, cy = (vv >> 5) & 31; if (cy >= 30) return 0;
+                u16 xh = (u16)(((hh & 31) << 3) + (((hh >> 10) & 1) << 8));
+                struct FrLine *L = &fr_line[line];
+                L->x0 = (u16)((xh + r->finex) & 511); L->row = (u16)(cy * 8 + ((vv >> 12) & 7)); L->special = 0; L->xs = 256;
+                seen[line] = 1; last[line].finex = r->finex; last[line].x = xh;
+                vv = fr_vinc((u16)vv); hh = hhn;
+            }
+            continue;
+        }
         int xa = r->d0 < 1 ? 0 : r->d0 - 1, xb = r->d1 > 257 ? 256 : r->d1 - 1; if (xb <= xa) continue;
         int hh = r->v & 0x41f, vv = r->v & 0x7be0;
         int cy = (vv >> 5) & 31; if (cy >= 30) return 0;
@@ -137,6 +155,7 @@ static void fr_sprites(void) {
 static void fr_sprites_restore(void) {                  /* mark the cells under last frame's sprites dirty */
     for (int k = 0; k < fr_spr_hist_n; k++) {
         int row = fr_spr_hist[k].row >> 3, c0 = fr_spr_hist[k].bx >> 3, c1 = (fr_spr_hist[k].bx + 7) >> 3;
+        if (row < 30) fr_row_dirty[row] = 1;
         for (int c = c0; c <= c1; c++) { int cc = c >= 64 ? c - 64 : c; if (cc < 64 && row < 30) fr_cell_dirty[row * 64 + cc] = 1; }
     }
     fr_spr_hist_n = 0;
@@ -162,10 +181,15 @@ static void fr_private_lines(void) {
         if (fr_npriv >= FR_MAXPRIV) { fr_nbands = FR_MAXBANDS + 1; return; }
         u8 *dst = fr_priv + fr_npriv * FR_ROWB; fr_priv_ptr[l] = dst; fr_npriv++;
         const u8 *src = fr_bmp + fr_line[l].row * FR_ROWB;
+        int xs = fr_line[l].xs, xa = fr_line[l].x0, xb = fr_line[l].x1;
         for (int p = 0; p < 4; p++) {                                   /* sprites are not in the bitmap yet: planes 0-3 of the background */
             u8 *d = dst + p * FR_BW; const u8 *s = src + p * FR_BW;
-            memset(d, 0, 40);
-            for (int x = 0; x < 256; x++) { int bx = (x < fr_line[l].xs ? fr_line[l].x0 : fr_line[l].x1) + x; if ((s[bx >> 3] >> (7 - (bx & 7))) & 1) d[x >> 3] |= 0x80 >> (x & 7); }
+            for (int i = 0; i < 32; i++) {
+                u32 a = get8(s, xa + 8 * i), b = get8(s, xb + 8 * i);
+                int k = xs - 8 * i;                                      /* number of pixels of this byte that still use the first scroll */
+                d[i] = (u8)(k >= 8 ? a : k <= 0 ? b : ((a & (0xFF00u >> k)) | (b & ~(0xFF00u >> k))) & 0xFF);
+            }
+            for (int i = 32; i < 40; i++) d[i] = 0;
         }
         memset(dst + 4 * FR_BW, 0, 40);
     }
