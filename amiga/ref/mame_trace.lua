@@ -8,6 +8,9 @@ local mem = cpu.spaces["program"]
 local scr = m.screens[":screen"]
 local ppu = m.devices[":ppu"]
 local frame = 0
+local pxout = io.open(os.getenv("PIX_OUT") or "pix.bin","wb")
+local colmap, ncol = {}, 0
+local function want_pix(f) return (f>=495 and f<=530) or (f%10==0 and f>=100) end
 local function cyc() return cpu.state["CURCYCLES"] and 0 or 0 end
 local function now() return math.floor(m.time:as_double()*1662607+0.5) end
 local function wcb(off,data,mask) out:write(string.format("W %d %d %04X %02X\n",frame,now(),off,data)) end
@@ -34,6 +37,20 @@ emu.register_frame_done(function()
   press("P1 Up", f>=start_f+200 and (f%97)<5)
   press("P1 Down", f>=start_f+260 and (f%89)<5)
   press("P1 B", f>=start_f+120 and (f%3)==0)
+  -- pixels: one byte per pixel = index of first appearance of the RGB value; the RGB table is appended on request
+  if want_pix(frame) then
+    local px = scr:pixels()
+    local w, h = scr.width, scr.height
+    local t = {}
+    for i = 1, #px, 4 do
+      local key = px:sub(i,i+2)
+      local id = colmap[key]
+      if not id then ncol = ncol + 1; id = ncol; colmap[key] = id; out:write(string.format("COL %d %02X%02X%02X\n", id, px:byte(i+2), px:byte(i+1), px:byte(i))) end
+      t[#t+1] = string.char(id)
+    end
+    out:write(string.format("PIX %d %d %d %d\n", frame, w, h, #px))
+    pxout:write(string.char(frame % 256, frame // 256)); pxout:write(table.concat(t))
+  end
   -- dump state
   local vs = ppu.spaces["videoram"]
   if vs then

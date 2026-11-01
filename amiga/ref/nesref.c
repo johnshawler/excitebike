@@ -155,11 +155,13 @@ static void ppu_run_cycle(void) {
 static int dma_pending;
 static void apu_write(u16 a, u8 d);
 static u8 open_bus;
-static void cyc(void) { cpu_cycle++; ppu_run_cycle(); }
+static int sst; static u8 sstmem[65536]; static struct { u16 a; u8 d; char rw; } sstlog[64]; static int sstn;
+static void cyc(void) { cpu_cycle++; if (!sst) ppu_run_cycle(); }
 
 static u8 bus_rd(u16 a) {
     cyc();
     u8 d;
+    if (sst) { d = sstmem[a]; if (sstn < 64) { sstlog[sstn].a = a; sstlog[sstn].d = d; sstlog[sstn].rw = 0; sstn++; } return d; }
     if (a < 0x2000) d = ram[a & 0x7ff];
     else if (a < 0x4000) {
         switch (a & 7) {
@@ -182,6 +184,7 @@ static u8 bus_rd(u16 a) {
 }
 static void bus_wr(u16 a, u8 d) {
     cyc();
+    if (sst) { sstmem[a] = d; if (sstn < 64) { sstlog[sstn].a = a; sstlog[sstn].d = d; sstlog[sstn].rw = 1; sstn++; } return; }
     tracef("W", a, d, 1);
     if (a < 0x2000) ram[a & 0x7ff] = d;
     else if (a < 0x4000) {
@@ -264,7 +267,7 @@ static void cpu_step(void) {
     switch (op) {
     case 0x00: fetch(); push(c.pc >> 8); push(c.pc & 255); push(c.p | FB | FU); c.p |= FI; { u8 lo = RD(0xfffe), hi = RD(0xffff); c.pc = lo | hi << 8; } return;
     case 0x20: { u8 lo = fetch(); RD(0x100 | c.s); push(c.pc >> 8); push(c.pc & 255); u8 hi = fetch(); c.pc = lo | hi << 8; } return;
-    case 0x40: RD(c.pc); c.p = (pull() & ~FB) | FU; { u8 lo = pull(); u8 hi = pull(); c.pc = lo | hi << 8; } return;
+    case 0x40: RD(c.pc); RD(0x100 | c.s); c.p = (pull() & ~FB) | FU; { u8 lo = pull(); u8 hi = pull(); c.pc = lo | hi << 8; } return;
     case 0x60: RD(c.pc); RD(0x100 | c.s); { u8 lo = pull(); u8 hi = pull(); c.pc = lo | hi << 8; } RD(c.pc); c.pc++; return;
     case 0x4c: { u8 lo = fetch(); u8 hi = fetch(); c.pc = lo | hi << 8; } return;
     case 0x6c: { u8 lo = fetch(); u8 hi = fetch(); u16 p = lo | hi << 8; u8 l = RD(p), h = RD((p & 0xff00) | (u8)(p + 1)); c.pc = l | h << 8; } return;
@@ -342,9 +345,12 @@ static void set_pad(void) {
     if (f >= s + 120 && (f % 3) == 0) b |= 0x02;                              /* B */
     pad_state[0] = b;
 }
+static FILE *pixf;
 static void frame_hook(void) {
     dump_count++;
     set_pad();
+    if (pixf && ((dump_count >= 495 && dump_count <= 530) || (dump_count % 10 == 0 && dump_count >= 100))) {
+        fputc(dump_count & 255, pixf); fputc(dump_count >> 8, pixf); fwrite(frame_pix, 1, sizeof frame_pix, pixf); }
     if (!tr) return;
     u8 ntdump[2048]; for (int i = 0; i < 2048; i++) ntdump[i] = nt[(i >> 10)][i & 0x3ff];
     /* MAME's videoram view of 0x2000-0x2fff with vertical mirroring: 2000=NT0, 2400=NT1, 2800=NT0, 2c00=NT1 */
@@ -352,7 +358,38 @@ static void frame_hook(void) {
     hexline("NT", full, 4096); hexline("PAL", pal, 32); hexline("OAMRAM", ram + 0x200, 256); hexline("RAM", ram, 2048);
     if (dump_count >= (u64)maxframes) { fclose(tr); tr = NULL; exit(0); }
 }
+
+/* ---- SingleStepTests runner: "nesref --sst tests.txt" ; file lines written by tools/sst2txt.py:
+ *   T name | pc s a x y p | nin addr val ... | nout addr val ... | ncyc addr val rw ... */
+static int sst_run(const char *fn) {
+    FILE *f = fopen(fn, "r"); if (!f) { perror(fn); return 1; }
+    char name[64]; long total = 0, fail = 0;
+    sst = 1;
+    unsigned pc, s, a, x, y, p, n;
+    while (fscanf(f, " T %63[^|]|", name) == 1) {
+        if (fscanf(f, "%u %u %u %u %u %u %u", &pc, &s, &a, &x, &y, &p, &n) != 7) return 1;
+        static unsigned ia[64], iv[64]; if (n > 64) return 1;
+        for (unsigned i = 0; i < n; i++) { if (fscanf(f, "%u %u", &ia[i], &iv[i]) != 2) return 1; }
+        memset(sstmem, 0, sizeof sstmem); for (unsigned i = 0; i < n; i++) sstmem[ia[i]] = iv[i];
+        c.pc = pc; c.s = s; c.a = a; c.x = x; c.y = y; c.p = p; sstn = 0; nmi_pending = 0;
+        cpu_step();
+        unsigned fpc, fs, fa, fx, fy, fp, nf; if (fscanf(f, "%u %u %u %u %u %u %u", &fpc, &fs, &fa, &fx, &fy, &fp, &nf) != 7) return 1;
+        int bad = 0; char why[128] = "";
+        if (c.pc != fpc) { bad = 1; sprintf(why, "pc %04x!=%04x", c.pc, fpc); }
+        else if (c.s != fs || c.a != fa || c.x != fx || c.y != fy) { bad = 1; sprintf(why, "regs s%02x a%02x x%02x y%02x vs s%02x a%02x x%02x y%02x", c.s, c.a, c.x, c.y, fs, fa, fx, fy); }
+        else if ((c.p | 0x30) != (fp | 0x30)) { bad = 1; sprintf(why, "p %02x!=%02x", c.p, fp); }
+        for (unsigned i = 0; i < nf; i++) { unsigned aa, vv; if (fscanf(f, "%u %u", &aa, &vv) != 2) return 1; if (!bad && sstmem[aa] != vv) { bad = 1; sprintf(why, "mem[%04x]=%02x!=%02x", aa, sstmem[aa], vv); } }
+        unsigned nc; if (fscanf(f, "%u", &nc) != 1) return 1;
+        if (!bad && (int)nc != sstn) { bad = 1; sprintf(why, "cycles %d!=%u", sstn, nc); }
+        for (unsigned i = 0; i < nc; i++) { unsigned aa, vv, rw; if (fscanf(f, "%u %u %u", &aa, &vv, &rw) != 3) return 1;
+            if (!bad && i < (unsigned)sstn && (sstlog[i].a != aa || sstlog[i].d != vv || sstlog[i].rw != (int)rw)) { bad = 1; sprintf(why, "cycle %u: %04x %02x %d vs %04x %02x %u", i, sstlog[i].a, sstlog[i].d, sstlog[i].rw, aa, vv, rw); } }
+        total++; if (bad) { if (fail < 5) printf("FAIL %s: %s\n", name, why); fail++; }
+    }
+    printf("%s: %ld tests, %ld failures\n", fn, total, fail); fclose(f); return fail != 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc == 3 && !strcmp(argv[1], "--sst")) return sst_run(argv[2]);
     if (argc < 4) { fprintf(stderr, "usage: nesref rom.nes frames start_frame [trace]\n"); return 1; }
     FILE *f = fopen(argv[1], "rb"); if (!f) { perror("rom"); return 1; }
     u8 hdr[16]; if (fread(hdr, 1, 16, f) != 16 || memcmp(hdr, "NES\x1a", 4)) { fprintf(stderr, "bad iNES\n"); return 1; }
@@ -361,6 +398,7 @@ int main(int argc, char **argv) {
     if (fread(prg, 1, 16384, f) != 16384 || fread(chr, 1, 8192, f) != 8192) return 1; fclose(f);
     maxframes = atoi(argv[2]); input_frame_start = atoi(argv[3]);
     if (argc > 4) tr = fopen(argv[4], "w");
+    if (getenv("PIX_OUT")) pixf = fopen(getenv("PIX_OUT"), "wb");
     for (int i = 0; i < 2048; i++) ram[i] = (i & 1) ? 0xff : 0x00;                                /* MAME NES RAM power-on pattern is checked in verification */
     c.s = 0xfd; c.p = FI | FU;
     /* reset sequence: 7 cycles; MAME logs the first write at cycle 16 */
