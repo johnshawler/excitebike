@@ -38,6 +38,7 @@ static inline u32 processed(u32 c) { return (c * 16u) / 5u; }
 static inline u32 cycle_of_dot(u32 d) { return (5u * (d + 1u) + 15u) >> 4; }       /* cycle in which dot d is processed */
 
 static inline u8 *ntp(u16 a) { return &nt[(a >> 10) & 1][a & 0x3ff]; }                /* vertical mirroring */
+static void fr_nt_write(u16 a);
 static void flush_pending(void);      /* render the logged line segments (the state they were logged with is still in place) */
 static u8 ppu_rd(u16 a) {
     a &= 0x3fff;
@@ -49,7 +50,7 @@ static void ppu_wr(u16 a, u8 d) {
     a &= 0x3fff;
     if (a < 0x2000) return;
     flush_pending();
-    if (a < 0x3f00) { *ntp(a) = d; return; }
+    if (a < 0x3f00) { *ntp(a) = d; fr_nt_write(a); return; }
     a &= 0x1f; if ((a & 0x13) == 0x10) a &= 0x0f; pal[a] = d & 0x3f;
 }
 
@@ -157,10 +158,34 @@ struct Seg { u16 d0, d1, scan, v, t; u8 finex, ctrl, mask; };
 static struct Seg seglog[SEGMAX]; static int nseg;
 static u32 live_hit_dot = ~0u, replay_hit_dot = ~0u;
 static u16 lv_hh, lv_vv;
-u32 stat_flushes, stat_hit_mismatch;
+u32 stat_flushes, stat_hit_mismatch, stat_fr_bad; u8 fr_enabled = 1;
+__attribute__((weak)) void plat_fr_report(u32 frame, int bad, int first) { (void)frame; (void)bad; (void)first; }
 
-static void render_log(void) {
+static void render_log(int at_hook);
+static u8 fr_midflush;
+static void midflush_check(void) { if (nseg) fr_midflush = 1; }
+u8 rt_frame_fast;                      /* 1: the finished frame is described by fr_bands (hardware scroll display), 0: frame_pix is valid */
+#include "fastr.c"
+static void render_slow(void);
+static void render_log(int at_hook) {
     if (!nseg) return;
+    if (at_hook) {
+        int ok = 0;
+        if (!fr_midflush && fr_enabled) ok = fr_render(seglog, nseg);
+        fr_midflush = 0;
+        rt_frame_fast = (u8)ok;
+#ifndef FR_VERIFY
+        if (ok) { nseg = 0; stat_flushes++; return; }
+#endif
+        render_slow();
+#ifdef FR_VERIFY
+        if (ok) { static u8 rec[240][256]; fr_reconstruct(rec); int bad = 0, fl = -1; for (int l = 0; l < 240; l++) for (int x = 0; x < 256; x++) if (rec[l][x] != (frame_pix[l][x] & 0x3f)) { if (fl < 0) fl = l * 256 + x; bad++; } if (bad) { stat_fr_bad++; if (stat_fr_bad < 4) plat_fr_report(frame_no, bad, fl); } }
+#endif
+        return;
+    }
+    render_slow();
+}
+static void render_slow(void) {
     u16 sv = v, st = t; u8 sf = finex, sc = ctrl, sm = mask, ss = status;
     for (int i = 0; i < nseg; i++) {
         const struct Seg *r = &seglog[i];
@@ -208,7 +233,7 @@ static void hit_scan(int scan, int d0, int d1, int commit) {
 }
 static void live_segment(int scan, int d0, int d1) {
     int vis = scan < 240, pre = scan == 311, on = rend_on();
-    if (nseg == SEGMAX) render_log();
+    if (nseg == SEGMAX) { fr_midflush = 1; render_log(0); }
     { struct Seg *r = &seglog[nseg++]; r->d0 = d0; r->d1 = d1; r->scan = scan; r->v = v; r->t = t; r->finex = finex; r->ctrl = ctrl; r->mask = mask; }
     if (!(on && (vis || pre))) return;
     if (vis && d1 > 1) hit_scan(scan, d0, d1, 1);
@@ -222,7 +247,7 @@ static void live_segment(int scan, int d0, int d1) {
     if (d0 <= 321 && 321 < d1) { lv_hh = v & 0x41f; lv_vv = v & 0x7be0; }
 }
 
-static void flush_pending(void) { render_log(); }
+static void flush_pending(void) { midflush_check(); render_log(0); }
 static void nmi_eval(u32 cyc);
 static int dump_pending;
 static void frame_hook(void) {
@@ -237,7 +262,7 @@ static void ppu_run_to(u32 P) {
         u32 line_start = dots_done - dot;
         u32 stop = line_start + 341; if (stop > P) stop = P;
         int d1 = (int)(stop - line_start);
-        if (scan == 240 && dot == 0) { render_log(); live_hit_dot = ~0u; replay_hit_dot = ~0u; frame_hook(); }
+        if (scan == 240 && dot == 0) { render_log(1); live_hit_dot = ~0u; replay_hit_dot = ~0u; frame_hook(); }
         /* events with fixed dot positions that affect status flags */
         if (scan == 241 && dot <= 1 && 1 < d1) { if (!vbl_suppress) status |= 0x80; vbl_suppress = 0; nmi_eval(cycle_of_dot(line_start + 1)); }
         if (scan == 311 && dot <= 1 && 1 < d1) { status &= ~(0x80 | 0x40 | 0x20); nmi_eval(cycle_of_dot(line_start + 1)); }

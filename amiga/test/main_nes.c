@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../rt/rt.h"
+extern u8 *fr_bmp, *fr_priv; extern u32 stat_fr_bad, fr_stat_ok, fr_stat_fallback, fr_stat_cells; extern u8 fr_enabled;
 extern void exb_run(u8 *ram, const u8 *prg, struct RT *rt, void **disp);
 extern void *dispatch_tab[16384];
 static FILE *tr, *pixf; static int maxframes, start_frame;
@@ -40,9 +41,12 @@ void plat_frame(u32 f) {
         u8 full[4096]; for (int i = 0; i < 4096; i++) full[i] = nt[(i >> 10) & 1][i & 0x3ff];
         hexline("NT", f, full, 4096); hexline("PAL", f, pal, 32); hexline("OAMRAM", f, ram + 0x200, 256); hexline("RAM", f, ram, 2048);
     }
-    if ((int)f >= maxframes) { if (tr) fclose(tr); if (pixf) fclose(pixf); exit(0); }
+    if ((int)f >= maxframes) { if (tr) fclose(tr); if (pixf) fclose(pixf); fprintf(stderr, "fast renderer: %u frames ok, %u fallback, %u cells drawn, %u mismatching frames\n", fr_stat_ok, fr_stat_fallback, fr_stat_cells, stat_fr_bad); exit(0); }
 }
+static u8 fr_bmp_store[240 * 500], fr_priv_store[4 * 500];
+void plat_fr_report(u32 frame, int bad, int first) { fprintf(stderr, "FAST RENDERER MISMATCH frame %u: %d pixels, first at line %d x %d\n", frame, bad, first / 256, first % 256); }
 int main(int argc, char **argv) {
+    fr_bmp = fr_bmp_store; fr_priv = fr_priv_store; if (getenv("NOFAST")) fr_enabled = 0;
     if (argc < 4) { fprintf(stderr, "usage: exb rom.nes frames start_frame [trace] [pix]\n"); return 1; }
     FILE *f = fopen(argv[1], "rb"); static u8 rom[24592]; if (!f || fread(rom, 1, sizeof rom, f) != sizeof rom) return 1; fclose(f);
     prg = rom + 16; chr = rom + 16 + 16384; maxframes = atoi(argv[2]); start_frame = atoi(argv[3]);
