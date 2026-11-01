@@ -17,10 +17,13 @@ const u8 *chr;                 /* 8 KB */
 u8 nt[2][1024], pal[32], oam[256];
 u8 frame_pix[240][256];        /* palette index (bits 0-5) + emphasis (bits 6-7) per pixel, completed at line 240 */
 
-#define FD 106392ull           /* dots per frame: 312 * 341 */
+#define FD 106392u             /* dots per frame: 312 * 341 */
+#define EPOCH_CYC 66495u       /* two frames = 66495 CPU cycles = 212784 dots exactly: time is kept relative to an epoch that is re-based in c_event */
+#define EPOCH_DOTS 212784u
+static u64 epoch_cycles;       /* cycles before the current epoch (for traces only) */
 static u8 ctrl, mask, status, oamaddr, rbuf, wlatch, finex, open_bus;
 static u16 v, t;
-static u64 dots_done;
+static u32 dots_done;
 static u32 frame_no;
 static int vbl_suppress;
 static int nmi_line_prev;
@@ -31,8 +34,8 @@ __attribute__((weak)) void plat_frame(u32 frame) { (void)frame; }
 __attribute__((weak)) void plat_trace(char kind, u32 frame, u32 cyc, u16 addr, u8 val) { (void)kind; (void)frame; (void)cyc; (void)addr; (void)val; }
 __attribute__((weak)) void plat_pad(u32 frame) { (void)frame; }
 
-static inline u64 processed(u32 c) { return ((u64)c * 16) / 5; }
-static inline u32 cycle_of_dot(u64 d) { return (u32)((5 * (d + 1) + 15) / 16); }       /* cycle in which dot d is processed */
+static inline u32 processed(u32 c) { return (c * 16u) / 5u; }
+static inline u32 cycle_of_dot(u32 d) { return (5u * (d + 1u) + 15u) >> 4; }       /* cycle in which dot d is processed */
 
 static inline u8 *ntp(u16 a) { return &nt[(a >> 10) & 1][a & 0x3ff]; }                /* vertical mirroring */
 static u8 ppu_rd(u16 a) {
@@ -151,11 +154,11 @@ static void frame_hook(void) {
     dump_pending = 1;                   /* the frame dump is made at the next instruction boundary */
 }
 /* advance the PPU to P dots processed */
-static void ppu_run_to(u64 P) {
+static void ppu_run_to(u32 P) {
     while (dots_done < P) {
-        int scan = (int)((dots_done / 341) % 312), dot = (int)(dots_done % 341);
-        u64 line_start = dots_done - dot;
-        u64 stop = line_start + 341; if (stop > P) stop = P;
+        u32 fpos = dots_done % FD; int scan = (int)(fpos / 341), dot = (int)(fpos % 341);
+        u32 line_start = dots_done - dot;
+        u32 stop = line_start + 341; if (stop > P) stop = P;
         int d1 = (int)(stop - line_start);
         if (scan == 240 && dot == 0) { frame_hook(); }
         /* events with fixed dot positions that affect status flags */
@@ -175,9 +178,9 @@ static void nmi_eval(u32 cyc) {
 }
 static void reschedule(void) {
     u32 due = 0x7fffffff;
-    u64 fi = dots_done / FD;
-    u64 hk = fi * FD + 240 * 341; if (hk < dots_done) hk += FD;
-    u64 vb = fi * FD + 241 * 341 + 1; if (vb < dots_done) vb += FD;
+    u32 fi = dots_done / FD;
+    u32 hk = fi * FD + 240 * 341; if (hk < dots_done) hk += FD;
+    u32 vb = fi * FD + 241 * 341 + 1; if (vb < dots_done) vb += FD;
     u32 c;
     c = cycle_of_dot(hk); if (c < due) due = c;
     c = cycle_of_dot(vb); if (c < due) due = c;
@@ -187,11 +190,17 @@ static void reschedule(void) {
 }
 /* called from the poll stub: bring the model to 'now'; return 1 when an NMI is to be taken at this instruction boundary */
 u32 c_event(u32 now) {
+    rt.rebase = 0;
     ppu_run_to(processed(now));
     if (dump_pending) { dump_pending = 0; plat_frame(frame_no); }
+    while (now >= 2 * EPOCH_CYC) {                      /* re-base the time scale: the translated code subtracts rt.rebase from its cycle counter */
+        now -= EPOCH_CYC; rt.rebase += EPOCH_CYC; epoch_cycles += EPOCH_CYC;
+        dots_done -= EPOCH_DOTS; if (nmi_pending) nmi_edge -= EPOCH_CYC;
+    }
     reschedule();
     return nmi_pending && nmi_edge + 1 <= now;
 }
+u64 c_epoch(void) { return epoch_cycles; }
 void c_nmi_taken(void) { nmi_pending = 0; reschedule(); }
 
 /* ------------------------------------------------------------------ bus */
@@ -246,7 +255,7 @@ u32 c_wr(u32 stamp, u32 addr, u32 val) {
     }
     else if (addr == 0x4014) {
         u16 base = (u16)(d << 8);
-        u32 c = stamp + 1; extra = 1; if (c & 1) { c++; extra++; }
+        u32 c = stamp + 1; extra = 1; if ((c + (u32)epoch_cycles) & 1) { c++; extra++; }
         for (int i = 0; i < 256; i++) oam[(oamaddr + i) & 255] = base < 0x2000 ? ram[(base + i) & 0x7ff] : 0;
         extra += 512;
     }

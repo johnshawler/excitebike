@@ -8,7 +8,7 @@ extern void *dispatch_tab[16384];
 static FILE *tr, *pixf; static int maxframes, start_frame;
 FILE *dbg; void c_dbg(u32 pc, u32 cyc, u32 a, u32 x, u32 y, u32 ccr) { if (dbg) fprintf(dbg, "B %u %04X A%02X X%02X Y%02X F%02X\n", cyc, pc, a & 255, x & 255, y & 255, ccr); }
 void c_abort(int code, u32 cyc) { fprintf(stderr, "ABORT %d at cycle %u frame %u\n", code, cyc, c_frame_no()); if (tr) fclose(tr); exit(3); }
-void plat_trace(char kind, u32 frame, u32 cyc, u16 addr, u8 val) { if (tr) fprintf(tr, "%c %u %u %04X %02X\n", kind, frame, cyc, addr, val); }
+void plat_trace(char kind, u32 frame, u32 cyc, u16 addr, u8 val) { if (tr) fprintf(tr, "%c %u %llu %04X %02X\n", kind, frame, (unsigned long long)(c_epoch() + cyc), addr, val); }
 static void hexline(const char *k, u32 f, const u8 *p, int n) { fprintf(tr, "%s %u ", k, f); for (int i = 0; i < n; i++) fprintf(tr, "%02X", p[i]); fputc('\n', tr); }
 static struct { long from, to; int mask, period, on; } scr[64]; static int nscr = -1;
 static void load_script(void) {

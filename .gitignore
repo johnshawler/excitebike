@@ -20,3 +20,6 @@ PRG_ROM.bin
 CHR_screens.chr
 
 *.lnk
+amiga/platform/build/
+amiga/exb.nes
+*.adf

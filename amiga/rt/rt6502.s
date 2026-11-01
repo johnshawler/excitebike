@@ -77,6 +77,8 @@ rt_nmi_deliver:
 	move.l %a5,-(%sp)
 	jsr c_event
 	addq.l #4,%sp
+	move.l 4(%a3),%d1
+	suba.l %d1,%a5
 	tst.l %d0
 	beq.s 9f
 	| NMI: push PCH, PCL, P and enter the handler
