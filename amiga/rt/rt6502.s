@@ -43,7 +43,17 @@
 	.endr
 	.globl rt_rd_gen
 rt_rd_gen:
-	movem.l %d0-%d1/%a0-%a1,-(%sp)
+	cmp.w #0x2000,%d4
+	bcc.s 1f
+	and.w #0x7ff,%d4                 | RAM (and its mirrors) and ROM are read directly
+	move.b (%a0,%d4.l),%d6
+	rts
+1:	cmp.w #0x8000,%d4
+	bcs.s 2f
+	and.w #0x3fff,%d4
+	move.b (%a1,%d4.l),%d6
+	rts
+2:	movem.l %d0-%d1/%a0-%a1,-(%sp)
 	add.l %a5,%d5
 	and.l #0xffff,%d4
 	move.l %d4,-(%sp)
@@ -55,7 +65,12 @@ rt_rd_gen:
 	rts
 	.globl rt_wr_gen
 rt_wr_gen:
-	movem.l %d0-%d1/%a0-%a1,-(%sp)
+	cmp.w #0x2000,%d4
+	bcc.s 1f
+	and.w #0x7ff,%d4
+	move.b %d6,(%a0,%d4.l)
+	rts
+1:	movem.l %d0-%d1/%a0-%a1,-(%sp)
 	add.l %a5,%d5
 	and.l #0xffff,%d4
 	and.l #0xff,%d6

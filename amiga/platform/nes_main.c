@@ -11,7 +11,7 @@ extern void c2p_pair(const uint8_t *src, uint8_t *dst);
 uint16_t c2p_uni_words[256][8] __attribute__((aligned(4)));
 
 static uint32_t pal32[256], palf[256];
-extern u8 rt_frame_fast; extern u8 *fr_bmp, *fr_priv; extern void fr_palette(u8 out[32]);
+extern u8 rt_frame_fast, rt_skip_next; extern u8 *fr_bmp, *fr_priv, *fr_clean; static u8 clean_store[240 * 500]; extern void fr_palette(u8 out[32]);
 extern void fd_show_slow(void); extern void fd_show_fast(void); extern int fd_mode_now(void);
 static uint8_t chip_bmp[240 * 500 + 16] __attribute__((section(".chipbuf"), aligned(16)));
 static uint8_t chip_priv[4 * 500 + 16] __attribute__((section(".chipbuf"), aligned(16)));
@@ -67,7 +67,8 @@ void plat_frame(u32 f)
     exb_game_frame = f;
     if (!started) { started = 1; base_tick_g = plat_tick_count; }
     int behind = (int)(plat_tick_count - base_tick_g) - (int)f;
-    if (rt_frame_fast) {                                       /* hardware scroll display: the planes are ready, only the Copper list has to follow */
+    if (rt_frame_fast == 2) { exb_frames_late++; }                 /* frame not rendered (running late) */
+    else if (rt_frame_fast) {                                  /* hardware scroll display: the planes are ready, only the Copper list has to follow */
         uint8_t pl[32]; fr_palette(pl); pl[30] = 0; pl[31] = 0;
         if (pal_mode != 1) { pal_mode = 1; for (int i = 0; i < 32; i++) fast_pal_shadow[i] = 0xFF; }
         unsigned changed = 0;
@@ -107,6 +108,11 @@ void plat_frame(u32 f)
         }
         fd_show_slow(); exb_frames_shown++;
     }
+    {   static unsigned skipped;                               /* render the next frame only if we are not behind real time; never skip more than 3 in a row */
+        int bh = (int)(plat_tick_count - base_tick_g) - (int)f;
+        if (rt_frame_fast == 2) skipped++; else skipped = 0;
+        rt_skip_next = (bh > 1 && skipped < 3) ? 1 : 0;
+    }
     while ((int)f - (int)(plat_tick_count - base_tick_g) > 1) { }             /* never run faster than the 50 Hz of the original */
 }
 
@@ -115,7 +121,7 @@ void main(void)
     for (unsigned v = 0; v < 256; v++) for (unsigned p = 0; p < 8; p++) c2p_uni_words[v][p] = ((v >> p) & 1) ? 0xFFFF : 0;
     for (unsigned i = 0; i < 256; i++) pal32[i] = nes_pal_rgb[i & 63];
     plat_set_palette256(pal32); pal_mode = 0;
-    fr_bmp = chip_bmp + 8; fr_priv = chip_priv + 8;
+    fr_bmp = chip_bmp + 8; fr_priv = chip_priv + 8; fr_clean = clean_store;
     fd_show_slow();
     prg = rom_prg; chr = rom_chr;
     c_reset();

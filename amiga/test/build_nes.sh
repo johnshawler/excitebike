@@ -8,5 +8,5 @@ python3 -I $R/tools/xl6502.py "$ROM" $CFG $SEEDS $O/prog.s ${TRACE:+x --trace}
 CC=m68k-linux-gnu-gcc
 $CC -m68020 -c -x assembler -o $O/prog.o $O/prog.s
 $CC -m68020 -c -x assembler -o $O/rt6502.o $R/rt/rt6502.s
-$CC -m68020 -O2 -static -g ${VERIFY-"-DFR_VERIFY"} -o $O/exb $H/main_nes.c $R/rt/nes_rt.c $O/prog.o $O/rt6502.o -Wall -Wno-unused 2>&1 | grep -v "GNU-stack\|deprecated\|^$" || true
+$CC -m68020 -O2 -static -g ${TRACEFLAG--DRT_TRACE} ${VERIFY-"-DFR_VERIFY"} -o $O/exb $H/main_nes.c $R/rt/nes_rt.c $O/prog.o $O/rt6502.o -Wall -Wno-unused 2>&1 | grep -v "GNU-stack\|deprecated\|^$" || true
 ls -l $O/exb

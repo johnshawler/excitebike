@@ -1,7 +1,7 @@
 #ifndef RT_H
 #define RT_H
 #include <stdint.h>
-typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef uint64_t u64;
+typedef int16_t s16; typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef uint64_t u64;
 struct RT { u32 ev_due; u32 rebase; u32 idle_a; u32 idle_ccr; u32 fuse_val; u32 fuse_exited; };                 /* offset 0: polled by translated main-thread code (cmpa.l ev_due(%a3),%a5) */
 extern struct RT rt;
 extern u8 ram[2048]; extern const u8 *prg, *chr; extern u8 nt[2][1024], pal[32], oam[256]; extern u8 frame_pix[240][256];

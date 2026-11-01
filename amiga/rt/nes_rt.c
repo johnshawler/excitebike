@@ -164,7 +164,8 @@ __attribute__((weak)) void plat_fr_report(u32 frame, int bad, int first) { (void
 static void render_log(int at_hook);
 static u8 fr_midflush;
 static void midflush_check(void) { if (nseg) fr_midflush = 1; }
-u8 rt_frame_fast;                      /* 1: the finished frame is described by fr_bands (hardware scroll display), 0: frame_pix is valid */
+u8 rt_skip_next;                      /* set by the platform: do not render the frame that is about to finish (the game state is unaffected) */
+u8 rt_frame_fast;                      /* 2: frame skipped, 1: the finished frame is described by fr_bands (hardware scroll display), 0: frame_pix is valid */
 #include "fastr.c"
 static void render_slow(void);
 static void render_log(int at_hook) {
@@ -172,6 +173,7 @@ static void render_log(int at_hook) {
     stat_segs += nseg;
     if (at_hook) {
         int ok = 0;
+        if (rt_skip_next && !fr_midflush) { nseg = 0; rt_frame_fast = 2; stat_flushes++; return; }
         if (!fr_midflush && fr_enabled) ok = fr_render(seglog, nseg);
         fr_midflush = 0;
         rt_frame_fast = (u8)ok;
@@ -236,8 +238,9 @@ static void hit_scan(int scan, int d0, int d1, int commit) {
 }
 static u8 oam_cnt[240]; static int oam_cnt_valid, oam_cnt_h;       /* number of sprites on each line (sprite overflow flag), recomputed after OAM or the sprite size changed */
 static void oam_cnt_build(int h) {
-    memset(oam_cnt, 0, sizeof oam_cnt);
-    for (int i = 0; i < 64; i++) { int y = oam[i * 4]; for (int r = 0; r < h; r++) { int l = y + 1 + r; if (l < 240) oam_cnt[l]++; } }
+    static s16 diff[250 + 20]; memset(diff, 0, sizeof diff);
+    for (int i = 0; i < 64; i++) { int y = oam[i * 4]; if (y < 239) { diff[y + 1]++; diff[y + 1 + h]--; } }
+    int acc = 0; for (int l = 0; l < 240; l++) { acc += diff[l]; oam_cnt[l] = (u8)acc; }
     oam_cnt_valid = 1; oam_cnt_h = h;
 }
 static void live_segment(int scan, int d0, int d1) {
@@ -353,9 +356,14 @@ void c_nmi_taken(void) { nmi_pending = 0; reschedule(); }
 /* ------------------------------------------------------------------ bus */
 static void io_sync(u32 stamp) { stat_syncs++; ppu_run_to(processed(stamp)); }
 
+u32 stat_rd[8], stat_wr[8];
 u32 c_rd(u32 stamp, u32 addr) {
-    u8 d = 0;
+    u8 d = 0; stat_rd[addr < 0x2000 ? 0 : addr < 0x4000 ? 1 + (addr & 7) % 7 : 7]++;
+#ifdef RT_TRACE
     io_sync(stamp);
+#else
+    if (!((addr & 0xfffe) == 0x4016) && addr >= 0x2000) io_sync(stamp);       /* controller reads do not depend on the PPU: no need to advance it */
+#endif
     addr &= 0xffff;
     if (addr < 0x2000) d = ram[addr & 0x7ff];
     else if (addr < 0x4000) {
@@ -377,16 +385,22 @@ u32 c_rd(u32 stamp, u32 addr) {
     else if (addr >= 0x4000 && addr < 0x4020) d = 0;
     else if (addr >= 0x8000) d = prg[addr & 0x3fff];
     else d = open_bus;
+#ifdef RT_TRACE
     if (addr == 0x2002 || addr == 0x4016 || addr == 0x4017) plat_trace('R', frame_no, stamp, addr, d);
+#endif
     if (due_dirty) reschedule();
     return d;
 }
 /* returns extra CPU cycles consumed (OAM DMA) */
 u32 c_wr(u32 stamp, u32 addr, u32 val) {
-    u8 d = (u8)val; u32 extra = 0;
-    io_sync(stamp);
+    u8 d = (u8)val; u32 extra = 0; stat_wr[addr < 0x2000 ? 0 : addr < 0x4000 ? 1 + (addr & 7) % 7 : 7]++;
     addr &= 0xffff;
+#ifdef RT_TRACE
+    io_sync(stamp);
     if ((addr >= 0x2000 && addr <= 0x2007) || (addr >= 0x4000 && addr <= 0x4017)) plat_trace('W', frame_no, stamp, addr, d);
+#else
+    if (addr < 0x4000 || addr == 0x4014) io_sync(stamp);                        /* only the PPU (and the OAM DMA, which reads RAM) depends on the exact time */
+#endif
     if (addr < 0x2000) ram[addr & 0x7ff] = d;
     else if (addr < 0x4000) {
         open_bus = d;
