@@ -111,7 +111,7 @@ void plat_frame(u32 f)
     {   static unsigned skipped;                               /* render the next frame only if we are not behind real time; never skip more than 3 in a row */
         int bh = (int)(plat_tick_count - base_tick_g) - (int)f;
         if (rt_frame_fast == 2) skipped++; else skipped = 0;
-        rt_skip_next = (bh > 1 && skipped < 3) ? 1 : 0;
+        rt_skip_next = (bh > 1 && skipped < 7) ? 1 : 0;
     }
     while ((int)f - (int)(plat_tick_count - base_tick_g) > 1) { }             /* never run faster than the 50 Hz of the original */
 }

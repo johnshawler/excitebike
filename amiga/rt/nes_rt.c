@@ -171,6 +171,7 @@ u8 rt_frame_fast;                      /* 2: frame skipped, 1: the finished fram
 __attribute__((weak)) void plat_apu(const struct ApuOut *o, u32 frame) { (void)o; (void)frame; }
 static void render_slow(void);
 static void render_log(int at_hook) {
+    if (at_hook && rt_skip_next && !fr_midflush) { nseg = 0; rt_frame_fast = 2; return; }
     if (!nseg) return;
     stat_segs += nseg;
     if (at_hook) {
@@ -247,10 +248,12 @@ static void oam_cnt_build(int h) {
 }
 static void live_segment(int scan, int d0, int d1) {
     int vis = scan < 240, pre = scan == 311, on = rend_on();
+    if (rt_skip_next) goto nolog;
     if (nseg == SEGMAX) { fr_midflush = 1; render_log(0); }
     { struct Seg *r = &seglog[nseg++]; r->d0 = d0; r->d1 = d1; r->scan = scan; r->v = v; r->t = t; r->finex = finex; r->ctrl = ctrl; r->mask = mask; r->nl = 0; }
+    nolog:
     if (!(on && (vis || pre))) return;
-    if (vis && d1 > 1) hit_scan(scan, d0, d1, 1);
+    if (vis && d1 > 1 && (unsigned)(scan - oam[0] - 1) < ((ctrl & 0x20) ? 16u : 8u)) hit_scan(scan, d0, d1, 1);
     if (d0 <= 256 && 256 < d1) inc_y();
     if (d0 <= 257 && 257 < d1) {
         v = (v & ~0x41f) | (t & 0x41f);
@@ -270,8 +273,10 @@ static inline u16 vinc_y(u16 vv) {
     return (u16)((vv & ~0x3e0) | (y << 5));
 }
 static void live_lines(int scan0, int n) {
+    if (!rt_skip_next) {
     if (nseg == SEGMAX) { fr_midflush = 1; render_log(0); }
     { struct Seg *r = &seglog[nseg++]; r->d0 = 0; r->d1 = 341; r->scan = scan0; r->v = v; r->t = t; r->finex = finex; r->ctrl = ctrl; r->mask = mask; r->nl = n; }
+    }
     if (!rend_on()) return;
     int h = (ctrl & 0x20) ? 16 : 8; if (!oam_cnt_valid || oam_cnt_h != h) oam_cnt_build(h);
     u16 vl = v; int hit_possible = ((mask & 0x18) == 0x18) && !(status & 0x40);

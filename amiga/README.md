@@ -24,6 +24,7 @@ otherwise).  Controls: joystick port 2 (fire = A / accelerate, 2nd button = B / 
 | first working build (per-pixel renderer) | 1.8 % |
 | fused loops + exact line model + fast renderer | 40.7 % (race start, 290 game frames / 712 ticks) |
 | + display frame skipping when behind real time (at most 3 of 4) | 59.3 % (420 / 708) |
+| + log-free skipped frames, cheaper PPU stepping, up to 7 of 8 frames skipped; **racing with opponents, timer running** | 77.2 % (624 game frames / 808 ticks; 546 of them not displayed, i.e. about 6-7 displayed frames per second at worst) |
 Instructions per frame (qemu count, production build, race frames): ~103,000: renderer set-up/sprites 40 k, PPU line model 19 k, translated 6502 code 13 k, background cell redraw 7 k, I/O 9 k, rest 15 k.
 
 ## Verified so far
