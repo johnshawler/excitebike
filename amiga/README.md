@@ -25,7 +25,8 @@ otherwise).  Controls: joystick port 2 (fire = A / accelerate, 2nd button = B / 
 | fused loops + exact line model + fast renderer | 40.7 % (race start, 290 game frames / 712 ticks) |
 | + display frame skipping when behind real time (at most 3 of 4) | 59.3 % (420 / 708) |
 | + log-free skipped frames, cheaper PPU stepping, up to 7 of 8 frames skipped; **racing with opponents, timer running** | 77.2 % (624 game frames / 808 ticks; 546 of them not displayed, i.e. about 6-7 displayed frames per second at worst) |
-Instructions per frame (qemu count, production build, race frames): ~103,000: renderer set-up/sprites 40 k, PPU line model 19 k, translated 6502 code 13 k, background cell redraw 7 k, I/O 9 k, rest 15 k.
+| + sprite-0 look-ahead in whole-line steps, closed-form line stepping, long-word OAM DMA, cheaper overflow check (core 52k -> 33k instructions per frame) | **100.0 %** (808 game frames / 808 ticks in a race; about 73 % of the frames are not displayed, i.e. roughly 13 displayed frames per second) |
+Instructions per frame (qemu count, production build, frames rendered): ~103,000 before the last round; with rendering skipped the core needs ~33,000: translated 6502 code 13 k, PPU line model 5 k, I/O 5 k, rest 10 k.
 
 ## Verified so far
 | check | result |

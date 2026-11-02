@@ -239,11 +239,13 @@ static void hit_scan(int scan, int d0, int d1, int commit) {
         if (bgpx_live(x)) { hit_x_found = x; if (commit) { status |= 0x40; live_hit_dot = (u32)(scan * 341 + x + 1); } return; }
     }
 }
-static u8 oam_cnt[240]; static int oam_cnt_valid, oam_cnt_h;       /* number of sprites on each line (sprite overflow flag), recomputed after OAM or the sprite size changed */
+static u8 oam_cnt[240]; static int oam_cnt_valid, oam_cnt_h, oam_ovf_line = 9999;       /* number of sprites on each line (sprite overflow flag), recomputed after OAM or the sprite size changed */
 static void oam_cnt_build(int h) {
+    int vis = 0; for (int i = 0; i < 64; i++) if (oam[i * 4] < 239) vis++;
+    if (vis <= 8) { memset(oam_cnt, 0, sizeof oam_cnt); oam_ovf_line = 9999; oam_cnt_valid = 1; oam_cnt_h = h; return; }       /* at most 8 sprites: no line can overflow */
     static s16 diff[250 + 20]; memset(diff, 0, sizeof diff);
     for (int i = 0; i < 64; i++) { int y = oam[i * 4]; if (y < 239) { diff[y + 1]++; diff[y + 1 + h]--; } }
-    int acc = 0; for (int l = 0; l < 240; l++) { acc += diff[l]; oam_cnt[l] = (u8)acc; }
+    int acc = 0; oam_ovf_line = 9999; for (int l = 0; l < 240; l++) { acc += diff[l]; oam_cnt[l] = (u8)acc; if (acc > 8 && oam_ovf_line == 9999) oam_ovf_line = l; }
     oam_cnt_valid = 1; oam_cnt_h = h;
 }
 static void live_segment(int scan, int d0, int d1) {
@@ -272,6 +274,16 @@ static inline u16 vinc_y(u16 vv) {
     if (y == 29) { y = 0; vv ^= 0x800; } else if (y == 31) y = 0; else y++;
     return (u16)((vv & ~0x3e0) | (y << 5));
 }
+/* vertical part of v after k line increments (coarse y wraps 29 -> 0 with the nametable bit flipped) */
+static u16 vadvance(u16 vl, int k) {
+    int cy = (vl >> 5) & 31, fy = (vl >> 12) & 7;
+    if (cy >= 30) { while (k--) vl = vinc_y(vl); return vl; }
+    int tot = cy * 8 + fy + k, wraps = tot / 240; tot -= wraps * 240; if (tot >= 240) tot -= 240;
+    cy = tot >> 3; fy = tot & 7;
+    vl = (u16)((vl & ~0x73e0) | (fy << 12) | (cy << 5));
+    if (wraps & 1) vl ^= 0x800;
+    return vl;
+}
 static void live_lines(int scan0, int n) {
     if (!rt_skip_next) {
     if (nseg == SEGMAX) { fr_midflush = 1; render_log(0); }
@@ -279,18 +291,18 @@ static void live_lines(int scan0, int n) {
     }
     if (!rend_on()) return;
     int h = (ctrl & 0x20) ? 16 : 8; if (!oam_cnt_valid || oam_cnt_h != h) oam_cnt_build(h);
-    u16 vl = v; int hit_possible = ((mask & 0x18) == 0x18) && !(status & 0x40);
+    u16 v0 = v;
+    int hit_possible = ((mask & 0x18) == 0x18) && !(status & 0x40);
     int s0 = (int)oam[0] + 1;                                         /* first line covered by sprite 0 */
-    for (int k = 0; k < n; k++) {
-        int line = scan0 + k;
-        if (hit_possible && line >= s0 && line < s0 + h) {
-            lv_hh = vl & 0x41f; lv_vv = vl & 0x7be0;
-            v = vl; hit_scan(line, 0, 341, 1); if (status & 0x40) hit_possible = 0;
+    if (hit_possible && s0 < scan0 + n && s0 + h > scan0) {          /* only the few lines of sprite 0 need the line by line treatment */
+        int k0 = s0 > scan0 ? s0 - scan0 : 0, k1 = (s0 + h < scan0 + n ? s0 + h : scan0 + n) - scan0;
+        for (int k = k0; k < k1 && hit_possible; k++) {
+            u16 vl = vadvance(v0, k); if (k) vl = (u16)((vl & ~0x41f) | (t & 0x41f));
+            lv_hh = vl & 0x41f; lv_vv = vl & 0x7be0; v = vl; hit_scan(scan0 + k, 0, 341, 1); if (status & 0x40) hit_possible = 0;
         }
-        vl = vinc_y(vl);
-        vl = (u16)((vl & ~0x41f) | (t & 0x41f));
-        if (line + 1 < 240 && oam_cnt[line + 1] > 8) status |= 0x20;
     }
+    if (oam_ovf_line <= scan0 + n && oam_ovf_line > scan0) status |= 0x20;   /* sprite overflow is flagged at dot 257 of the previous line */
+    u16 vl = vadvance(v0, n); vl = (u16)((vl & ~0x41f) | (t & 0x41f));
     v = vl; lv_hh = vl & 0x41f; lv_vv = vl & 0x7be0;
 }
 static void nmi_eval(u32 cyc);
@@ -304,7 +316,7 @@ static void frame_hook(void) {
 /* advance the PPU to P dots processed */
 static u32 fbase;                 /* dots_done at the start of the current frame */
 static int p_scan, p_dot;         /* position of dots_done inside the frame */
-static void set_pos_from(u32 d) { u32 o = d - fbase; p_scan = (int)(o / 341); p_dot = (int)(o - (u32)p_scan * 341); }
+static void set_pos_from(u32 d) { u32 o = d - fbase; p_scan = (int)(((u64)o * 98401u) >> 25); p_dot = (int)(o - (u32)p_scan * 341); }
 static void ppu_run_to(u32 P) {
     while (dots_done < P) {
         int scan = p_scan, dot = p_dot;
@@ -427,7 +439,8 @@ u32 c_wr(u32 stamp, u32 addr, u32 val) {
         u16 base = (u16)(d << 8);
         u32 c = stamp + 1; extra = 1; if ((c + (u32)epoch_cycles) & 1) { c++; extra++; }
         flush_pending(); oam_cnt_valid = 0;
-        for (int i = 0; i < 256; i++) oam[(oamaddr + i) & 255] = base < 0x2000 ? ram[(base + i) & 0x7ff] : 0;
+        if (oamaddr == 0 && base < 0x2000) { const u32 *sp = (const u32 *)(ram + (base & 0x700)); u32 *dp = (u32 *)oam; for (int i = 0; i < 64; i++) dp[i] = sp[i]; }
+        else for (int i = 0; i < 256; i++) oam[(oamaddr + i) & 255] = base < 0x2000 ? ram[(base + i) & 0x7ff] : 0;
         extra += 512;
     }
     else if (addr == 0x4016) { strobe = d & 1; if (strobe) { pad_shift[0] = pad_state[0]; pad_shift[1] = pad_state[1]; } }
@@ -449,7 +462,12 @@ static int ahead_to_hit(void) {
     while (!(status & 0x40)) {
         int scan = p_scan, dot = p_dot;
         if (scan >= 240) return 0;
+        int h = (ctrl & 0x20) ? 16 : 8, s0 = (int)oam[0] + 1;
+        if (scan >= s0 + h) return 0;                                    /* sprite 0 is behind us: no hit in this frame */
         u32 line_start = dots_done - dot, stop = line_start + 341;
+        if (scan < s0 - 1 || (scan == s0 - 1 && dot == 0)) {              /* nothing can happen before the first line of sprite 0: skip whole lines at once */
+            if (dot == 0) { stop = fbase + (u32)(s0 > 240 ? 240 : s0) * 341; ppu_run_to(stop); continue; }
+        }
         int on = rend_on();
         if (on && dot < 257) {                              /* probe the rest of this line for the hit before committing the segment */
             hit_scan(scan, dot, 341, 0);
