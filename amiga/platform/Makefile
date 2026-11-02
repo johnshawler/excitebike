@@ -22,7 +22,9 @@ $(B)/nespal.h: $(A)/tools/palette.py | $(B)
 	python3 -I -c "import sys; sys.path.insert(0,'$(A)/tools'); import palette; t=palette.table(0); open('$@','w').write('static const unsigned nes_pal_rgb[64] = {' + ','.join('0x%02X%02X%02X'%c for c in t) + '};\n')"
 $(B)/%.o: $(B)/%.s
 	$(CC) $(ASFLAGS) -x assembler -c $< -o $@
-$(B)/romdata.o: romdata.s $(B)/rom.bin
+$(B)/demo.bin: | $(B)
+	if [ -n "$(DEMOPAD)" ]; then cp $(DEMOPAD) $@; else : > $@; fi
+$(B)/romdata.o: romdata.s $(B)/rom.bin $(B)/demo.bin
 	cd $(B) && $(CC) $(ASFLAGS) -x assembler -c $(HERE)/romdata.s -o $@
 $(B)/rt6502.o: $(A)/rt/rt6502.s | $(B)
 	$(CC) $(ASFLAGS) -x assembler -c $< -o $@

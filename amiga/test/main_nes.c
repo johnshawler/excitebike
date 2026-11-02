@@ -37,7 +37,9 @@ static u8 pad_for(long f) {
 void plat_pad(u32 f) { c_set_pad(pad_for(f)); }
 extern u8 rt_skip_next;
 void plat_apu(const struct ApuOut *o, u32 f) { if (tr) fprintf(tr, "A %u %u %u %u %u %u %u %u %u %u %u %u %u %u\n", f, o->per[0], o->per[1], o->per[2], o->per[3], o->vol[0], o->vol[1], o->vol[2], o->vol[3], o->duty[0], o->duty[1], o->noise_short, o->dac, o->retrig[0] | o->retrig[1] << 1 | o->retrig[2] << 2 | o->retrig[3] << 3); }
+extern int fr_why; extern u8 rt_frame_fast;
 void plat_frame(u32 f) {
+    if (getenv("FBDBG") && !rt_frame_fast) fprintf(stderr, "slow frame %u why %d\n", f, fr_why);
     if (getenv("SKIPALL")) rt_skip_next = 1;
     if (getenv("SKIP34")) { static unsigned k; k++; rt_skip_next = (k & 3) != 0; }
     if (pixf && ((f >= 495 && f <= 530) || (f % 10 == 0 && f >= 100))) { fputc(f & 255, pixf); fputc(f >> 8, pixf); fwrite(frame_pix, 1, sizeof frame_pix, pixf); }
@@ -45,12 +47,12 @@ void plat_frame(u32 f) {
         u8 full[4096]; for (int i = 0; i < 4096; i++) full[i] = nt[(i >> 10) & 1][i & 0x3ff];
         hexline("NT", f, full, 4096); hexline("PAL", f, pal, 32); hexline("OAMRAM", f, ram + 0x200, 256); hexline("RAM", f, ram, 2048);
     }
-    if ((int)f >= maxframes) { if (tr) fclose(tr); if (pixf) fclose(pixf); for (int i = 0; i < 8; i++) fprintf(stderr, "[%d] rd %u wr %u  ", i, stat_rd[i], stat_wr[i]); fprintf(stderr, "\n"); fprintf(stderr, "sprites %u rows %u drawn %u\n", fr_stat_sprites, fr_stat_rows, fr_stat_drawn); fprintf(stderr, "segments %u syncs %u frames %u; fast renderer: %u frames ok, %u fallback, %u cells drawn, %u mismatching frames\n", stat_segs, stat_syncs, f, fr_stat_ok, fr_stat_fallback, fr_stat_cells, stat_fr_bad); exit(0); }
+    if ((int)f >= maxframes) { if (tr) fclose(tr); if (pixf) fclose(pixf); for (int i = 0; i < 8; i++) fprintf(stderr, "[%d] rd %u wr %u  ", i, stat_rd[i], stat_wr[i]); fprintf(stderr, "\n"); { extern u32 fr_stat_cpuspr, fr_stat_behind, fr_stat_ovfframes; fprintf(stderr, "cpu-path sprites %u (behind %u), frames with an overflow line %u\n", fr_stat_cpuspr, fr_stat_behind, fr_stat_ovfframes); } fprintf(stderr, "sprites %u rows %u drawn %u\n", fr_stat_sprites, fr_stat_rows, fr_stat_drawn); fprintf(stderr, "segments %u syncs %u frames %u; fast renderer: %u frames ok, %u fallback, %u cells drawn, %u mismatching frames\n", stat_segs, stat_syncs, f, fr_stat_ok, fr_stat_fallback, fr_stat_cells, stat_fr_bad); exit(0); }
 }
-static u8 fr_bmp_store[240 * 500], fr_priv_store[4 * 500], fr_clean_store[240 * 500]; extern u8 *fr_clean;
+static u8 fr_bmp_store[240 * 400 + 16], fr_priv_store[4 * 400 + 16], fr_spr_store[2][240 * 200]; extern u8 *fr_spr_bufs[2]; extern u8 *fr_spr;
 void plat_fr_report(u32 frame, int bad, int first) { fprintf(stderr, "FAST RENDERER MISMATCH frame %u: %d pixels, first at line %d x %d\n", frame, bad, first / 256, first % 256); }
 int main(int argc, char **argv) {
-    fr_bmp = fr_bmp_store; fr_priv = fr_priv_store; fr_clean = fr_clean_store; if (getenv("NOFAST")) fr_enabled = 0;
+    fr_bmp = fr_bmp_store; fr_priv = fr_priv_store; fr_spr_bufs[0] = fr_spr_store[0]; fr_spr_bufs[1] = fr_spr_store[1]; fr_spr = fr_spr_bufs[0]; if (getenv("NOFAST")) fr_enabled = 0;
     if (argc < 4) { fprintf(stderr, "usage: exb rom.nes frames start_frame [trace] [pix]\n"); return 1; }
     FILE *f = fopen(argv[1], "rb"); static u8 rom[24592]; if (!f || fread(rom, 1, sizeof rom, f) != sizeof rom) return 1; fclose(f);
     prg = rom + 16; chr = rom + 16 + 16384; maxframes = atoi(argv[2]); start_frame = atoi(argv[3]);

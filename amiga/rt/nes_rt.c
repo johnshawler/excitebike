@@ -162,6 +162,13 @@ u32 stat_flushes, stat_hit_mismatch, stat_fr_bad, stat_segs, stat_syncs; u8 fr_e
 __attribute__((weak)) void plat_fr_report(u32 frame, int bad, int first) { (void)frame; (void)bad; (void)first; }
 
 static void render_log(int at_hook);
+u32 fr_prof_rl;
+#ifdef FR_PROF
+u32 plat_timer(void);
+#define RT_T() plat_timer()
+#else
+#define RT_T() 0
+#endif
 static u8 fr_midflush;
 static void midflush_check(void) { if (nseg) fr_midflush = 1; }
 u8 rt_skip_next;                      /* set by the platform: do not render the frame that is about to finish (the game state is unaffected) */
@@ -248,6 +255,7 @@ static void oam_cnt_build(int h) {
     int acc = 0; oam_ovf_line = 9999; for (int l = 0; l < 240; l++) { acc += diff[l]; oam_cnt[l] = (u8)acc; if (acc > 8 && oam_ovf_line == 9999) oam_ovf_line = l; }
     oam_cnt_valid = 1; oam_cnt_h = h;
 }
+static int fr_oam_overflow(void) { int h = (ctrl & 0x20) ? 16 : 8; if (!oam_cnt_valid || oam_cnt_h != h) oam_cnt_build(h); return oam_ovf_line != 9999; }
 static void live_segment(int scan, int d0, int d1) {
     int vis = scan < 240, pre = scan == 311, on = rend_on();
     if (rt_skip_next) goto nolog;
@@ -320,7 +328,7 @@ static void set_pos_from(u32 d) { u32 o = d - fbase; p_scan = (int)(((u64)o * 98
 static void ppu_run_to(u32 P) {
     while (dots_done < P) {
         int scan = p_scan, dot = p_dot;
-        if (scan == 240 && dot == 0) { render_log(1); live_hit_dot = ~0u; replay_hit_dot = ~0u; frame_hook(); }
+        if (scan == 240 && dot == 0) { u32 tr0 = RT_T(); render_log(1); fr_prof_rl += RT_T() - tr0; live_hit_dot = ~0u; replay_hit_dot = ~0u; frame_hook(); }
         if ((scan >= 242 && scan < 311) || (scan == 241 && dot >= 2)) {                  /* quiet part of the vertical blank: nothing happens until the pre-render line */
             u32 target = fbase + 311 * 341; if (target > P) target = P;
             dots_done = target; set_pos_from(target); continue;
@@ -513,7 +521,14 @@ u32 c_idle(u32 now, u32 limit, u32 S) {
     u32 base = 6 + 3 + 2 + 3 + 3 + 2 + 3 + 2 + 3 + 40 + 6 + 3 + ((t48 & 0x80) ? 3 : 5);      /* one iteration without the extra cycle of the SEC path */
     u32 room = (limit == 0x7fffffffu) ? 0xffffffffu : limit - now;                                /* iterations must end before the event */
     u32 used = 0, n = 0, last_b18 = 0, c = 0;
+    static u8 pc7[128]; if (!pc7[1]) for (int i = 0; i < 128; i++) pc7[i] = (u8)((i >> 1 ? pc7[i >> 1] : 0) + (i & 1));
     for (;;) {
+        if (used + 7 * (base + 1) < room) {                                /* seven iterations at once: the taps (bits 57 and 49) of the next six states are bits of the current one */
+            u32 xs = ((hi >> 25) ^ (hi >> 17)) & 0x7F;
+            last_b18 = (hi >> 31) << 1; c = (lo >> 6) & 1;            /* (bit 1 of b18 of the seventh state, carry out of the seventh shift) */
+            lo = (lo >> 7) | (hi << 25); hi = (hi >> 7) | (xs << 25);
+            used += 7 * base + pc7[xs]; n += 7; continue;
+        }
         u32 x = ((hi >> 25) ^ (hi >> 17)) & 1;
         u32 cyc = base + x;
         if (used + cyc >= room) break;

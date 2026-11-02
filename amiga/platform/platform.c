@@ -73,7 +73,7 @@
 #define PLAT_FMODE 1
 #endif
 #define BPLCON0_8PL  0x0211       /* BPU3 (bit 4) = 8 planes with BPU2..0 = 0, COLOR (bit 9), lores, ECSENA (bit 0: enables BRDRBLNK in BPLCON3) */
-#define BPLCON3_BASE 0x0C20       /* BANK 0, PF2OF default (011), LOCT 0, SPRES lores, BRDRBLNK (border blanked: always black) */
+#define BPLCON3_BASE 0x1020       /* BANK 0, PF2OF 100 (second playfield colours from 16), LOCT 0, SPRES lores, BRDRBLNK (border blanked: always black) */
 #define BPLCON3_LOCT 0x0200
 #define BPLCON4_BASE 0x0011       /* default: no bitplane XOR, sprite colour banks 1 (unused, sprites are off) */
 #if PLAT_FMODE == 0

@@ -26,6 +26,14 @@ otherwise).  Controls: joystick port 2 (fire = A / accelerate, 2nd button = B / 
 | + display frame skipping when behind real time (at most 3 of 4) | 59.3 % (420 / 708) |
 | + log-free skipped frames, cheaper PPU stepping, up to 7 of 8 frames skipped; **racing with opponents, timer running** | 77.2 % (624 game frames / 808 ticks; 546 of them not displayed, i.e. about 6-7 displayed frames per second at worst) |
 | + sprite-0 look-ahead in whole-line steps, closed-form line stepping, long-word OAM DMA, cheaper overflow check (core 52k -> 33k instructions per frame) | **100.0 %** (808 game frames / 808 ticks in a race; about 73 % of the frames are not displayed, i.e. roughly 13 displayed frames per second) |
+| + dual-playfield display (PF1 scrolled background, PF2 sprite layer, 8 planes), cheaper cell and sprite drawing, batched RNG idle loop | logic 100 %; displayed frames in the repeatable race benchmark (recorded input movie, `make EXTRA=-DDEMO DEMOPAD=...`): about 12-16 % in the busiest part of a race with three opponents, more in lighter scenes |
+
+**Honest status of the 50 fps goal:** game logic and audio run at 50 Hz (100 %), but the display does *not* reach 50 fps in busy race scenes.
+Benchmarks in FS-UAE (stock A1200, 14 MHz 68020, code in fast RAM): logic alone needs about 82 % of a frame, a fully rendered frame about 190 % of a frame
+(sprite layer drawing and chip-RAM writes are the largest part), so only a fraction of the frames can be shown. Tried and not kept: drawing the sprite
+layer with the blitter (cookie-cut blits; same total time, the blitter is not faster than the CPU here), FMODE 1 (32-bit fetch: about 17 % faster rendering
+but BPLCON1 delays of 16-31 pixels behave differently in FS-UAE than modelled, so the well-defined FMODE 0 is used). Nothing has been run on real hardware.
+Benchmark switches (platform `EXTRA=`): `-DHUD` counters, `-DFR_PROF` timing, `-DDEMO` movie input, `-DSKIPMODE=1|2` render always / almost never.
 Instructions per frame (qemu count, production build, frames rendered): ~103,000 before the last round; with rendering skipped the core needs ~33,000: translated 6502 code 13 k, PPU line model 5 k, I/O 5 k, rest 10 k.
 
 ## Verified so far
