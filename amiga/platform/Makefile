@@ -7,7 +7,7 @@ HERE := $(CURDIR)
 A := $(abspath ..)
 B ?= $(HERE)/build
 ROM ?= $(A)/exb.nes
-CFLAGS := -MMD -MP -m68020 -ffreestanding -nostdlib -fno-pic -O2 -fomit-frame-pointer -fno-tree-loop-distribute-patterns -fno-delete-null-pointer-checks -Wall -Wno-misleading-indentation -I$(HERE) -I$(B) -DA1200 $(EXTRA)
+CFLAGS := -MMD -MP -m68020 -ffreestanding -nostdlib -fno-pic -O2 -fomit-frame-pointer -fno-tree-loop-distribute-patterns -fno-delete-null-pointer-checks -Wall -Wno-misleading-indentation -I$(HERE) -I$(B) -DA1200 -DFR_HWBLIT $(EXTRA)
 ASFLAGS := -m68020
 all: $(B)/exb_a1200.adf
 $(B):

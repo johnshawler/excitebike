@@ -9,6 +9,13 @@
 void *memcpy(void *d, const void *s, size_t n)
 {
     uint8_t *dp = d; const uint8_t *sp = s;
+    if ((((uintptr_t)dp ^ (uintptr_t)sp) & 3) == 0) {          /* same alignment: long words (the program runs from slow 16-bit memory, a byte loop costs ~10x) */
+        while (n && ((uintptr_t)dp & 3)) { *dp++ = *sp++; n--; }
+        uint32_t *dl = (uint32_t *)dp; const uint32_t *sl = (const uint32_t *)sp;
+        while (n >= 16) { uint32_t a = sl[0], b = sl[1], c = sl[2], e = sl[3]; dl[0] = a; dl[1] = b; dl[2] = c; dl[3] = e; dl += 4; sl += 4; n -= 16; }
+        while (n >= 4) { *dl++ = *sl++; n -= 4; }
+        dp = (uint8_t *)dl; sp = (const uint8_t *)sl;
+    }
     while (n--) *dp++ = *sp++;
     return d;
 }
@@ -21,7 +28,12 @@ void *memmove(void *d, const void *s, size_t n)
 }
 void *memset(void *d, int c, size_t n)
 {
-    uint8_t *dp = d;
+    uint8_t *dp = d; uint32_t v = (uint8_t)c; v |= v << 8; v |= v << 16;
+    while (n && ((uintptr_t)dp & 3)) { *dp++ = (uint8_t)c; n--; }
+    uint32_t *dl = (uint32_t *)dp;
+    while (n >= 16) { dl[0] = v; dl[1] = v; dl[2] = v; dl[3] = v; dl += 4; n -= 16; }
+    while (n >= 4) { *dl++ = v; n -= 4; }
+    dp = (uint8_t *)dl;
     while (n--) *dp++ = (uint8_t)c;
     return d;
 }

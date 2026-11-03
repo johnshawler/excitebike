@@ -28,12 +28,24 @@ otherwise).  Controls: joystick port 2 (fire = A / accelerate, 2nd button = B / 
 | + sprite-0 look-ahead in whole-line steps, closed-form line stepping, long-word OAM DMA, cheaper overflow check (core 52k -> 33k instructions per frame) | **100.0 %** (808 game frames / 808 ticks in a race; about 73 % of the frames are not displayed, i.e. roughly 13 displayed frames per second) |
 | + dual-playfield display (PF1 scrolled background, PF2 sprite layer, 8 planes), cheaper cell and sprite drawing, batched RNG idle loop | logic 100 %; displayed frames in the repeatable race benchmark (recorded input movie, `make EXTRA=-DDEMO DEMOPAD=...`): about 12-16 % in the busiest part of a race with three opponents, more in lighter scenes |
 
+**Blitter / Copper rendering (this version).**  The CPU keeps an exact working copy of the background bitmap and the sprite data in fast RAM; everything that is *displayed*
+is changed by the blitter, driven by the Copper, in the vertical blank:
+* every changed background cell becomes one blit (32 rows = 4 planes x 8 rows, 100 bytes apart, one word wide, half-word mask, "cookie cut" D = A?B:C);
+* every sprite becomes two cookie-cut blits (planes 0/1 and planes 2/3 of the sprite layer; the blitter's barrel shifter does the x & 15 shift; sprites that are behind the
+  background or clipped get per-row masks built by the CPU), preceded by D-only blits that clear last frame's sprite rectangles;
+* the jobs are written directly as a Copper program (pointers and modulos only when they change); the display list jumps into it with COP2LC/COPJMP2 at the top of the
+  frame and it jumps back; once it has run the jump is patched to fall through (`fd_disarm`).  COPCON.CDANG lets the Copper write the blitter registers.
+* The host harness runs the *same jobs* with an exact software model of the blitter and compares the picture with the slow renderer (0 mismatching frames over 4 x 6000 frames,
+  and the cell blits are checked against the working copy); on the Amiga the Copper program was checked by eye in FS-UAE and with `-DSCROLLTEST` (scroll positions 0-255).
+
 **Honest status of the 50 fps goal:** game logic and audio run at 50 Hz (100 %), but the display does *not* reach 50 fps in busy race scenes.
-Benchmarks in FS-UAE (stock A1200, 14 MHz 68020, code in fast RAM): logic alone needs about 82 % of a frame, a fully rendered frame about 190 % of a frame
-(sprite layer drawing and chip-RAM writes are the largest part), so only a fraction of the frames can be shown. Tried and not kept: drawing the sprite
-layer with the blitter (cookie-cut blits; same total time, the blitter is not faster than the CPU here), FMODE 1 (32-bit fetch: about 17 % faster rendering
-but BPLCON1 delays of 16-31 pixels behave differently in FS-UAE than modelled, so the well-defined FMODE 0 is used). Nothing has been run on real hardware.
-Benchmark switches (platform `EXTRA=`): `-DHUD` counters, `-DFR_PROF` timing, `-DDEMO` movie input, `-DSKIPMODE=1|2` render always / almost never.
+Benchmarks in FS-UAE (A1200, 14 MHz 68020, **FS-UAE's `fast_memory` is Zorro-II RAM, i.e. 16-bit and slow: a 4-instruction store loop takes ~19 clocks per iteration, and every
+instruction fetch outside the 256-byte cache costs extra**): logic alone needs about 82 % of a frame, a fully rendered frame about 220 %.  Moving the drawing to the blitter did not
+change that total much in this setup, because the CPU's remaining work (building the job lists, the cell/sprite bookkeeping, chip-RAM writes) is bound by the same slow memory.
+On a real A1200 with 32-bit CPU-side fast RAM everything the CPU does should be roughly 1.5-2x faster, which would raise the displayed fraction considerably, but I could not measure that.
+Tried and not kept: FMODE 1 (32-bit fetch; about 10 % faster, but BPLCON1 delays of 16-31 pixels do not behave as documented in FS-UAE, so FMODE 0 with delays 0-15 is used),
+blitter priority bit, drawing sprites with the CPU into the displayed layer.  Nothing has been run on real hardware.
+Benchmark switches (platform `EXTRA=`): `-DHUD` counters, `-DFR_PROF` timing, `-DPCPROF` program-counter histogram, `-DMEMBENCH` memory speed, `-DSCROLLTEST` scroll test pattern, `-DDEMO` movie input, `-DSKIPMODE=1|2` render always / almost never.
 Instructions per frame (qemu count, production build, frames rendered): ~103,000 before the last round; with rendering skipped the core needs ~33,000: translated 6502 code 13 k, PPU line model 5 k, I/O 5 k, rest 10 k.
 
 ## Verified so far
