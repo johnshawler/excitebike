@@ -1,0 +1,19 @@
+[fs-uae]
+amiga_model = A1200
+kickstart_file = @KICK@
+chip_memory = 2048
+fast_memory = 2048
+slow_memory = 0
+hard_drive_0 = /tmp/hdfw/exb.hdf
+video_sync = off
+fullscreen = 0
+window_width = 768
+window_height = 576
+automatic_input_grab = 0
+joystick_port_1 = keyboard
+joystick_port_0 = none
+keyboard_key_x = action_joy_1_2nd_button
+keyboard_key_z = action_joy_1_fire_button
+uae_sound_interpol = none
+uae_sound_filter = off
+[end]
