@@ -28,6 +28,12 @@ otherwise).  Controls: joystick port 2 (fire = A / accelerate, 2nd button = B / 
 | + sprite-0 look-ahead in whole-line steps, closed-form line stepping, long-word OAM DMA, cheaper overflow check (core 52k -> 33k instructions per frame) | **100.0 %** (808 game frames / 808 ticks in a race; about 73 % of the frames are not displayed, i.e. roughly 13 displayed frames per second) |
 | + dual-playfield display (PF1 scrolled background, PF2 sprite layer, 8 planes), cheaper cell and sprite drawing, batched RNG idle loop | logic 100 %; displayed frames in the repeatable race benchmark (recorded input movie, `make EXTRA=-DDEMO DEMOPAD=...`): about 12-16 % in the busiest part of a race with three opponents, more in lighter scenes |
 
+**Loading on real machines.** The ADF bootblock / the HDF's AmigaDOS stub bring a *package* into memory: `stage2.s` (position independent), the game image and a relocation
+table (18530 absolute addresses).  With the OS already switched off, stage 2 walks `ExecBase->MemList`, picks the non-chip block with the highest priority (then the largest) that
+has room, copies the image there and relocates it, so fast RAM may be a trapdoor board at `$200000` or an accelerator's RAM anywhere (nothing is assumed about its address).
+Tested in FS-UAE with 2 MB and 8 MB Zorro-II fast RAM, for ADF and HDF.  An FS-UAE Blizzard-1230 accelerator configuration was not accepted (yellow screen: its RAM does not appear in
+the exec memory list in that emulation); real boards register their memory with exec.  Yellow screen = no suitable fast RAM found.
+
 **Blitter / Copper rendering (this version).**  The CPU keeps an exact working copy of the background bitmap and the sprite data in fast RAM; everything that is *displayed*
 is changed by the blitter, driven by the Copper, in the vertical blank:
 * every changed background cell becomes one blit (32 rows = 4 planes x 8 rows, 100 bytes apart, one word wide, half-word mask, "cookie cut" D = A?B:C);

@@ -54,10 +54,15 @@ $(B)/boot.bin: boot.s | $(B)
 	@test `stat -c %s $@` -le 1024 || (echo "bootblock > 1024 bytes"; false)
 OBJS := $(B)/crt0.o $(B)/prog.o $(B)/rt6502.o $(B)/nes_rt.o $(B)/nes_main.o $(B)/romdata.o $(B)/c2p.o $(B)/fastdisp.o $(B)/audio.o $(B)/plat.o $(B)/isr.o $(B)/rt.o $(B)/rtasm.o
 $(B)/exb.elf: $(OBJS) link.ld
-	$(LD) -T link.ld -Map=$(B)/exb.map -o $@ $(OBJS)
+	$(LD) -q -T link.ld -Map=$(B)/exb.map -o $@ $(OBJS)
 $(B)/exb.bin: $(B)/exb.elf
 	$(OBJCOPY) -O binary $< $@
-$(B)/exb_a1200.adf: $(B)/exb.bin $(B)/boot.bin
+$(B)/stage2.bin: stage2.s | $(B)
+	$(CC) $(ASFLAGS) -x assembler -c $< -o $(B)/stage2.o
+	$(OBJCOPY) -O binary -j .text $(B)/stage2.o $@
+$(B)/exb.pkg: $(B)/exb.bin $(B)/stage2.bin $(B)/exb.elf mkpkg.py
+	python3 mkpkg.py $@ $(B)/stage2.bin $(B)/exb.bin $(B)/exb.elf
+$(B)/exb_a1200.adf: $(B)/exb.pkg $(B)/boot.bin
 	python3 mkdisk.py $@ $(B)/boot.bin $<
 	@$(PREFIX)size $(B)/exb.elf
 	@sha256sum $@

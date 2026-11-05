@@ -12,9 +12,7 @@
 |    magenta = AllocMem failed (payload too big for free chip RAM), red = disk read error, cyan = 68040/68060.
 |
 | `payload_len` (offset 20) is patched by tools/mkdisk.py (payload size rounded up to a multiple of 512).
-    .equ    PAYLOAD_BASE, 0x200800      | fast RAM (A1200 with 2 MB Zorro II/CPU-slot fast RAM at $200000)
-    .equ    RELOC_ADDR,   0x200
-
+    
     .text
     .long   0x444F5300          | 'DOS\0'
     .long   0                   | checksum (filled in by mkadf.py)
@@ -55,9 +53,6 @@ start:
     lea     super(%pc),%a5
     jsr     -30(%a6)            | Supervisor(a5)  - never returns
 
-fail_nofast:
-    move.w  #0x0FF0,%d1         | yellow: no fast RAM at $200000
-    bra.s   fail
 fail_mem:
     move.w  #0x0F0F,%d1
     bra.s   fail
@@ -81,40 +76,6 @@ super:                          | supervisor mode, d6 = source, d7 = length
     move.w  #0x7FFF,0xDFF09C
     move.l  #0x0808,%d0         | CACR: clear I-cache (CI) and D-cache (CD, 68030), both disabled
     movec   %d0,%cacr
-    move.l  #0x200000,%a0       | fast RAM probe: first and last longword of the 2 MB at $200000
-    move.l  #0x3FFFFC,%a1
-    move.l  #0xA5C3E187,%d0
-    move.l  %d0,(%a0)
-    not.l   %d0
-    move.l  %d0,(%a1)
-    not.l   %d0
-    cmp.l   (%a0),%d0
-    bne     fail_nofast
-    not.l   %d0
-    cmp.l   (%a1),%d0
-    bne     fail_nofast
-    lea     reloc(%pc),%a0      | install relocator at RELOC_ADDR
-    lea     RELOC_ADDR.w,%a1
-    moveq   #(reloc_end-reloc)/2-1,%d0
-3:  move.w  (%a0)+,(%a1)+
-    dbra    %d0,3b
-    move.l  %d6,%a0             | src = staging
-    move.l  #PAYLOAD_BASE,%a1   | dst
-    move.l  %d7,%d0
-    lsr.l   #2,%d0              | longwords
-    jmp     RELOC_ADDR.w
+    move.l  %d6,%a0             | the package (stage 2 loader first) is in the staging buffer: stage2.s finds fast RAM and relocates the game there
+    jmp     (%a0)
 
-reloc:                          | position independent
-    cmp.l   %a0,%a1
-    bhi.s   2f                  | dst > src: copy descending
-1:  move.l  (%a0)+,(%a1)+
-    subq.l  #1,%d0
-    bne.s   1b
-    jmp     PAYLOAD_BASE
-2:  lea     0(%a0,%d7.l),%a0    | end of src
-    lea     0(%a1,%d7.l),%a1    | end of dst
-3:  move.l  -(%a0),-(%a1)
-    subq.l  #1,%d0
-    bne.s   3b
-    jmp     PAYLOAD_BASE
-reloc_end:

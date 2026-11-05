@@ -1,6 +1,6 @@
 import struct, sys, subprocess
 stub = open('/tmp/hdfw/stub.bin','rb').read()
-pay = open('/home/user/excitebike/amiga/platform/build/exb.bin','rb').read()
+pay = open('/home/user/excitebike/amiga/platform/build/exb.pkg','rb').read()
 pay += b'\0' * (-len(pay) % 4)
 stub = stub[:-4] + struct.pack('>I', len(pay))          # payload_len is the last long of the stub
 code = stub + pay
