@@ -2,7 +2,7 @@
 amiga_model = A1200
 kickstart_file = @KICK@
 chip_memory = 2048
-fast_memory = 2048
+fast_memory = 8192
 slow_memory = 0
 hard_drive_0 = /tmp/hdfw/exb.hdf
 video_sync = off

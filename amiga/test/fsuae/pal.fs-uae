@@ -2,7 +2,7 @@
 amiga_model = A1200
 kickstart_file = @KICK@
 chip_memory = 2048
-fast_memory = 2048
+fast_memory = 8192
 slow_memory = 0
 floppy_drive_0 = @ADF@
 floppy_drive_count = 1
