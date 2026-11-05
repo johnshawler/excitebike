@@ -45,10 +45,10 @@ is changed by the blitter, driven by the Copper, in the vertical blank:
   and the cell blits are checked against the working copy); on the Amiga the Copper program was checked by eye in FS-UAE and with `-DSCROLLTEST` (scroll positions 0-255).
 
 **Honest status of the 50 fps goal:** game logic and audio run at 50 Hz (100 %), but the display does *not* reach 50 fps in busy race scenes.
-Benchmarks in FS-UAE (A1200, 14 MHz 68020, **FS-UAE's `fast_memory` is Zorro-II RAM, i.e. 16-bit and slow: a 4-instruction store loop takes ~19 clocks per iteration, and every
-instruction fetch outside the 256-byte cache costs extra**): logic alone needs about 82 % of a frame, a fully rendered frame about 220 %.  Moving the drawing to the blitter did not
-change that total much in this setup, because the CPU's remaining work (building the job lists, the cell/sprite bookkeeping, chip-RAM writes) is bound by the same slow memory.
-On a real A1200 with 32-bit CPU-side fast RAM everything the CPU does should be roughly 1.5-2x faster, which would raise the displayed fraction considerably, but I could not measure that.
+Benchmarks in FS-UAE (A1200, 14 MHz 68020, 8 MB fast RAM at $200000 as on RAM-only trapdoor boards; the emulated memory timing was checked with a store loop: with cycle-exact
+emulation off, chip and fast RAM take the same time, ~17 clocks for a 5-instruction loop, i.e. ordinary 68020 speed, so the memory is *not* unusually slow and a real board with 32-bit RAM
+should perform about like this): logic alone needs about 82 % of a frame, a fully rendered frame about 220 %.  Moving the drawing to the blitter did not change that total much, because the CPU's remaining
+work (job lists, cell/sprite bookkeeping, chip-RAM writes) is the bottleneck.  No hardware speedup is to be expected; further gains need less CPU work per frame.
 Tried and not kept: FMODE 1 (32-bit fetch; about 10 % faster, but BPLCON1 delays of 16-31 pixels do not behave as documented in FS-UAE, so FMODE 0 with delays 0-15 is used),
 blitter priority bit, drawing sprites with the CPU into the displayed layer.  Nothing has been run on real hardware.
 Benchmark switches (platform `EXTRA=`): `-DHUD` counters, `-DFR_PROF` timing, `-DPCPROF` program-counter histogram, `-DMEMBENCH` memory speed, `-DSCROLLTEST` scroll test pattern, `-DDEMO` movie input, `-DSKIPMODE=1|2` render always / almost never.
