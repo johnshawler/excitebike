@@ -246,10 +246,15 @@ static void hit_scan(int scan, int d0, int d1, int commit) {
         if (bgpx_live(x)) { hit_x_found = x; if (commit) { status |= 0x40; live_hit_dot = (u32)(scan * 341 + x + 1); } return; }
     }
 }
-static u8 oam_cnt[240]; static int oam_cnt_valid, oam_cnt_h, oam_ovf_line = 9999;       /* number of sprites on each line (sprite overflow flag), recomputed after OAM or the sprite size changed */
+static u8 oam_cnt[240]; static int oam_clear, oam_cnt_valid, oam_cnt_h, oam_ovf_line = 9999;       /* number of sprites on each line (sprite overflow flag), recomputed after OAM or the sprite size changed */
 static void oam_cnt_build(int h) {
-    int vis = 0; for (int i = 0; i < 64; i++) if (oam[i * 4] < 239) vis++;
-    if (vis <= 8) { memset(oam_cnt, 0, sizeof oam_cnt); oam_ovf_line = 9999; oam_cnt_valid = 1; oam_cnt_h = h; return; }       /* at most 8 sprites: no line can overflow */
+    /* quick test: sprites are counted per bucket of 8 Y values; a line is covered by sprites whose Y lies in a window of h values, which touches at most h/8 + 1 buckets */
+    u8 bk[40]; memset(bk, 0, sizeof bk); int vis = 0;
+    for (int i = 0; i < 64; i++) { int y = oam[i * 4]; if (y < 239) { bk[y >> 3]++; vis++; } }
+    int m = h >> 3, worst = 0;
+    if (vis > 8) for (int b = 0; b < 30; b++) { int sum = 0; for (int k = 0; k <= m; k++) sum += bk[b + k]; if (sum > worst) worst = sum; }
+    if (vis <= 8 || worst <= 8) { oam_clear = 1; oam_ovf_line = 9999; oam_cnt_valid = 1; oam_cnt_h = h; return; }       /* no line can overflow */
+    oam_clear = 0;
     static s16 diff[250 + 20]; memset(diff, 0, sizeof diff);
     for (int i = 0; i < 64; i++) { int y = oam[i * 4]; if (y < 239) { diff[y + 1]++; diff[y + 1 + h]--; } }
     int acc = 0; oam_ovf_line = 9999; for (int l = 0; l < 240; l++) { acc += diff[l]; oam_cnt[l] = (u8)acc; if (acc > 8 && oam_ovf_line == 9999) oam_ovf_line = l; }
@@ -268,7 +273,7 @@ static void live_segment(int scan, int d0, int d1) {
     if (d0 <= 257 && 257 < d1) {
         v = (v & ~0x41f) | (t & 0x41f);
         int n = (scan + 1) % 312;
-        if (n < 240) { int h = (ctrl & 0x20) ? 16 : 8; if (!oam_cnt_valid || oam_cnt_h != h) oam_cnt_build(h); if (oam_cnt[n] > 8) status |= 0x20; }
+        if (n < 240) { int h = (ctrl & 0x20) ? 16 : 8; if (!oam_cnt_valid || oam_cnt_h != h) oam_cnt_build(h); if (!oam_clear && oam_cnt[n] > 8) status |= 0x20; }
     }
     if (pre && d0 <= 304 && 304 < d1) v = (v & ~0x7be0) | (t & 0x7be0);
     if (d0 <= 321 && 321 < d1) { lv_hh = v & 0x41f; lv_vv = v & 0x7be0; }
