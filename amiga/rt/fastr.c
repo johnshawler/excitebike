@@ -35,6 +35,11 @@ u8 *fr_bmp_chip, *fr_priv_chip;            /* platform: the displayed copies of 
 struct FrBand fr_bands[FR_MAXBANDS + 2]; int fr_nbands;
 static u8 fr_cell_dirty[30 * 64]; static u8 fr_row_dirty[30]; static u8 fr_all_dirty = 1; static u8 fr_bmp_table = 0xff;
 static u8 fr_have_bmp;
+#if defined(FR_VERIFY) || defined(FR_STATS)
+#define ST(x) x
+#else
+#define ST(x)
+#endif                                      /* statistics: only in verifying / statistics builds (every counter is a read-modify-write in slow memory) */
 u32 fr_stat_cpuspr, fr_stat_behind, fr_stat_ovfframes, fr_stat_cell_bad;
 #define behind_dbg(a) ((a) & 0x20)
 u32 fr_stat_ok, fr_stat_fallback, fr_stat_cells, fr_stat_sprites, fr_stat_rows, fr_stat_drawn;
@@ -110,7 +115,7 @@ static void fr_cell_draw(int col, int row) {
         FR_CELL_ROW(d, 0, e, s2, s3, 0); FR_CELL_ROW(d, 1, e, s2, s3, 0); FR_CELL_ROW(d, 2, e, s2, s3, 0); FR_CELL_ROW(d, 3, e, s2, s3, 0);
         FR_CELL_ROW(d, 4, e, s2, s3, 0); FR_CELL_ROW(d, 5, e, s2, s3, 0); FR_CELL_ROW(d, 6, e, s2, s3, 0); FR_CELL_ROW(d, 7, e, s2, s3, 0);
     }
-    fr_stat_cells++; fr_cell_job(col, row, id, pal);
+    ST(fr_stat_cells++;) fr_cell_job(col, row, id, pal);
 }
 static void fr_cells_update(u8 table) {
     if (!fr_exp_init) fr_exp_build();
@@ -381,15 +386,15 @@ static void fr_sprites_fast(void) {                     /* no line has more than
         if (!fr_mask_spr_left && sx < 8) { int k = 8 - sx; if (k >= 8) cm = 0; else cm &= 0xFF >> k; }
         if (!cm) continue;
         u8 attr = oam[i * 4 + 2]; u8 tile = oam[i * 4 + 1];
-        fr_stat_sprites++;
+        ST(fr_stat_sprites++;)
         int r1 = 8; if (y + 9 > 240) r1 = 239 - y;
         int hflip = attr & 0x40, vflip = attr & 0x80, behind = attr & 0x20;
         if (!behind && cm == 0xFF) {                                              /* ordinary sprite: prepared tile variant */
             const u8 *v = fr_variant(fr_spr_table, tile, (hflip ? 1 : 0) | (vflip ? 2 : 0));
-            fr_job_sprite(y, sx, v, v + 128, fr_consts + (attr & 3) * 64, r1); fr_stat_rows += (u32)r1; fr_stat_drawn += (u32)r1;
+            fr_job_sprite(y, sx, v, v + 128, fr_consts + (attr & 3) * 64, r1); ST(fr_stat_rows += (u32)r1; fr_stat_drawn += (u32)r1;)
             continue;
         }
-        fr_stat_cpuspr++; if (behind) fr_stat_behind++;                           /* behind the background or clipped: masks computed per row */
+        ST(fr_stat_cpuspr++; if (behind) fr_stat_behind++;)                           /* behind the background or clipped: masks computed per row */
         const u8 *c = chr + (fr_spr_table ? 0x1000 : 0) + tile * 16; u32 m2 = attr & 1, m3 = attr & 2;
         if (behind && !have_lb) { have_lb = 1; for (int l = 0, k = 0; k < fr_nbands; k++) { int e = fr_bands[k].line0 + fr_bands[k].nlines; for (; l < e; l++) fr_lineband[l] = (u8)k; } }
         fr_tmp_begin();
@@ -397,9 +402,9 @@ static void fr_sprites_fast(void) {                     /* no line has more than
             int l = y + 1 + r, rr = vflip ? 7 - r : r; u32 lo = c[rr], hi = c[rr + 8];
             if (hflip) { lo = fr_rev[lo]; hi = fr_rev[hi]; }
             u32 om = (lo | hi) & cm; if (!om) continue;
-            fr_stat_rows++; u32 vm = om;
+            ST(fr_stat_rows++;) u32 vm = om;
             if (behind) { int bx; const u8 *rowp = fr_bgrow(l, sx, &bx); vm &= ~(get8(rowp, bx) | get8(rowp + FR_BW, bx)); }
-            fr_tmp_row(r, om, vm, lo, hi, m2, m3); fr_stat_drawn++;
+            fr_tmp_row(r, om, vm, lo, hi, m2, m3); ST(fr_stat_drawn++;)
         }
         { u8 *t = fr_tmp_end(); fr_job_sprite(y, sx, t, t + 128, t + 192, r1); }
     }
@@ -419,12 +424,12 @@ static void fr_sprites_body(void) {
         u32 cm = 0xFF; if (sx + 7 > 255) cm &= (0xFF << (sx + 7 - 255)) & 0xFF;
         if (!fr_mask_spr_left && sx < 8) { int k = 8 - sx; if (k >= 8) cm = 0; else cm &= 0xFF >> k; }
         if (!cm) { for (int r = 0; r < 8 && y + 1 + r <= 239; r++) cnt[y + 1 + r]++; continue; }      /* fully masked, but it still occupies one of the 8 slots of its lines */
-        int hflip = attr & 0x40, vflip = attr & 0x80, behind = attr & 0x20; fr_stat_sprites++;
+        int hflip = attr & 0x40, vflip = attr & 0x80, behind = attr & 0x20; ST(fr_stat_sprites++;)
         u32 m2 = attr & 1, m3 = attr & 2; int any = 0; fr_tmp_begin();
         for (int r = 0; r < 8; r++) {
             int l = y + 1 + r; if (l > 239) break;
             if (cnt[l]++ >= 8) continue;
-            fr_stat_rows++;
+            ST(fr_stat_rows++;)
             int rr = vflip ? 7 - r : r; u32 lo = c[rr], hi = c[rr + 8];
             if (hflip) { lo = fr_rev[lo]; hi = fr_rev[hi]; }
             u32 om = (lo | hi) & cm; if (!om) continue;
@@ -435,7 +440,7 @@ static void fr_sprites_body(void) {
             u32 vm = nw;
             if (behind) { int bx; const u8 *rowp = fr_bgrow(l, sx, &bx); vm &= ~(get8(rowp, bx) | get8(rowp + FR_BW, bx)); }
             if (!vm) continue;
-            fr_stat_drawn++;
+            ST(fr_stat_drawn++;)
             fr_tmp_row(r, vm, vm, lo, hi, m2, m3); any = 1;                      /* the pixels are disjoint from all others: no replacing needed */
         }
         if (any) { u8 *t = fr_tmp_end(); fr_job_sprite(y, sx, t, t + 128, t + 192, y + 8 <= 239 ? 8 : 239 - y); }
