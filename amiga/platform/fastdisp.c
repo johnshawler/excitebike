@@ -39,11 +39,10 @@ extern int fr_njobs, fr_ncjobs; extern uint32_t fr_dbg[8]; extern uint32_t *fr_b
 /* The sprite layer is drawn by the blitter from a Copper program (see rt/fastr.c): the display list jumps (COP2LC / COPJMP2) into the program at the top of the
  * frame, the program runs the blits one after the other during the vertical blank and jumps back.  It must run only once: afterwards the jump is patched to
  * point at the next instruction (fd_disarm). */
-static uint32_t bl_buf[2][8192] __attribute__((section(".chipbuf"), aligned(4)));
-static unsigned bl_par;
-static uint16_t *armed_hi, *armed_lo; static uint32_t armed_ret, armed_vbl; static int pend, dead;
+
 
 static uint16_t cop[2][1024] __attribute__((section(".chipbuf"), aligned(8)));
+static uint32_t blf[2][8192] __attribute__((aligned(4)));                        /* blitter programs being built (fast RAM) */
 static unsigned cop_cur;
 static int fd_mode = -1;                       /* 0 slow (chunky c2p buffer), 1 fast (hardware scroll bands) */
 
@@ -127,7 +126,7 @@ static void finish(void)
 static void list_replaced(void);
 void fd_show_slow(void)
 {
-    if (!fr_bl_buf) fr_bl_buf = bl_buf[0];
+    if (!fr_bl_buf) fr_bl_buf = blf[0];
     list_replaced();
     cp = cop[cop_cur]; header(0);
     uint32_t base = (uint32_t)plat_front();
@@ -135,48 +134,74 @@ void fd_show_slow(void)
     mv(BPLCON1, 0);
     finish(); fd_mode = 0;
 }
-/* has the last list of blitter jobs run (or will it certainly, before a list installed now starts)? */
-int fr_jobs_executed(void)
+/* The lists are built in fast RAM (writing chip RAM from the CPU is very slow while the display DMA runs) and copied to chip RAM by the vertical-blank
+ * interrupt (fd_vbl_install), which restarts the Copper on the new list at once: the blits run in the vertical blank, so the picture is not delayed.  Two copies
+ * are made: one that jumps into the blitter program (started now with COPJMP1) and one without the jump, which is what the Copper restarts from in later frames. */
+static uint16_t lf[2][1024] __attribute__((aligned(4)));                         /* display lists being built (fast RAM) */
+static uint16_t cop_arm[2][1024] __attribute__((section(".chipbuf"), aligned(8)));
+static uint16_t cop_dis[2][1024] __attribute__((section(".chipbuf"), aligned(8)));
+static uint32_t bl_chip[2][8192] __attribute__((section(".chipbuf"), aligned(8)));
+static volatile int pending, dead; static int pend_par, pend_len, pend_jump, pend_bl;      /* pend_jump: word offset of the jump (0 = none) */
+static unsigned fpar; extern uint8_t fr_tmp_par; extern int fr_tmp_used; extern uint8_t *fr_tmp_fast[2], *fr_tmp[2];
+static int pend_tpar, pend_tn;
+int fr_jobs_executed(void)                      /* have the jobs of the last list run, or are they at least not lost? */
 {
-    if (dead) return 0;
-    if (!pend) return 1;
-    return plat_vbl_count != armed_vbl;
+    return !dead && !pending;
 }
-void fd_disarm(void)                            /* called every frame: the jobs of the last list have run once the vertical blank has passed */
+void fd_disarm(void) { }
+static void list_replaced(void)                 /* a new list is about to be built: a list that was not installed yet is lost */
 {
-    if (pend && !dead && plat_vbl_count != armed_vbl) {
-        *armed_hi = (uint16_t)(armed_ret >> 16); *armed_lo = (uint16_t)armed_ret;      /* the jump now goes to the next instruction */
-        pend = 0;
+    if (pending) { pending = 0; dead = 1; fr_dbg[1]++; }
+}
+void fd_vbl_install(void)                       /* called by the vertical-blank interrupt */
+{
+    if (!pending) return;
+    int par = pend_par; pending = 0;
+    uint32_t *sa = (uint32_t *)lf[par], *da = (uint32_t *)cop_arm[par], *dd = (uint32_t *)cop_dis[par];
+    int n = pend_len / 2;
+    if (pend_tn) { const uint32_t *st = (const uint32_t *)fr_tmp_fast[pend_tpar]; uint32_t *dt = (uint32_t *)fr_tmp[pend_tpar]; for (int i = 0; i < pend_tn * 64; i++) dt[i] = st[i]; }     /* special sprite masks */
+    if (pend_jump) {
+        const uint32_t *sb = blf[par]; uint32_t *db = bl_chip[par];
+        for (int i = 0; i < pend_bl; i++) db[i] = sb[i];
+        for (int i = 0; i < n; i++) { uint32_t w = sa[i]; da[i] = w; dd[i] = w; }
+        uint32_t ret_a = (uint32_t)(cop_arm[par] + pend_jump + 6), ret_d = (uint32_t)(cop_dis[par] + pend_jump + 6);
+        uint32_t j = (uint32_t)pend_jump / 2;
+        da[j] = (0x084u << 16) | ((uint32_t)bl_chip[par] >> 16); da[j + 1] = (0x086u << 16) | ((uint32_t)bl_chip[par] & 0xFFFF);
+        dd[j] = (0x084u << 16) | (ret_d >> 16); dd[j + 1] = (0x086u << 16) | (ret_d & 0xFFFF);
+        (void)ret_a;
+        R32(COP1LC) = (uint32_t)cop_arm[par]; R16(0x088) = 0;          /* COPJMP1: run the jobs now */
+        R32(COP1LC) = (uint32_t)cop_dis[par];                          /* later vertical blanks start the list without them */
+    } else {
+        for (int i = 0; i < n; i++) dd[i] = sa[i];
+        R32(COP1LC) = (uint32_t)cop_dis[par]; R16(0x088) = 0;
     }
+    dead = 0;
 }
-static void list_replaced(void)                 /* a new list is about to be installed: a list that has not run is lost */
-{
-    if (pend && plat_vbl_count == armed_vbl) { dead = 1; fr_dbg[1]++; }
-    pend = 0;
-}
-static void wait_not_at_top(void)               /* COP1LC is latched at the start of the vertical blank: do not write it right there */
-{
-    for (;;) { uint16_t v = R16(0x004), h = R16(0x006); unsigned line = ((v & 1) << 8) | (h >> 8); if (line > 8) break; }
-}
+void plat_vbl_hook(void) { fd_vbl_install(); }
 void fd_show_fast(void)
 {
     list_replaced();
-    cp = cop[cop_cur]; header(1); set_sprite_planes();
+    unsigned par = fpar; uint16_t *base = lf[par];
+    cp = base; header(1); set_sprite_planes();
+    int jump = 0;
     for (int k = 0; k < fr_nbands; k++) {
         const struct FrBand *b = &fr_bands[k];
         if (k) wait_line(plat_vstart + b->line0 - 1, 0xC8);
         set_planes(b, k == 0);
         if (k == 0 && (fr_njobs || fr_ncjobs) && !EXPA) {
-            uint32_t *bl = fr_bl_buf; uint32_t ret = (uint32_t)(cp + 6); uint32_t n = fr_bl_len;
-            bl[n] = (0x084u << 16) | (ret >> 16); bl[n + 1] = (0x086u << 16) | (ret & 0xFFFF); bl[n + 2] = (0x08Au << 16);      /* COP2LC = ret, COPJMP2 */
-            fr_dbg[4] = n; bl_par ^= 1; fr_bl_buf = bl_buf[bl_par];
-            armed_hi = cp + 1; armed_lo = cp + 3; armed_ret = ret;
-            mv(0x084, (uint32_t)bl >> 16); mv(0x086, (uint32_t)bl & 0xFFFF); mv(0x08A, 0);
-            armed_vbl = plat_vbl_count; pend = 1; dead = 0;
+            uint32_t *bl = fr_bl_buf; uint32_t n = fr_bl_len;
+            uint32_t ret_a = (uint32_t)(cop_arm[par] + (cp - base) + 6);
+            bl[n] = (0x084u << 16) | (ret_a >> 16); bl[n + 1] = (0x086u << 16) | (ret_a & 0xFFFF); bl[n + 2] = (0x08Au << 16);      /* COP2LC = back into the list, COPJMP2 */
+            pend_bl = (int)n + 3; fr_dbg[4] = n;
+            jump = (int)(cp - base);
+            mv(0x084, 0); mv(0x086, 0); mv(0x08A, 0);                   /* (the program's address is filled in at install time) */
         }
     }
-    if (!pend) dead = 0;
-    wait_not_at_top();
-    finish(); fd_mode = 1;
+    *(uint32_t *)cp = 0xFFFFFFFEu; cp += 2;
+    pend_tpar = fr_tmp_par; pend_tn = fr_tmp_used;
+    pend_par = (int)par; pend_len = (int)(cp - base); pend_jump = jump;
+    fpar ^= 1; fr_bl_buf = blf[fpar];
+    fd_mode = 1;
+    pending = 1;                                                        /* last: the interrupt may install the list from here on */
 }
 int fd_mode_now(void) { return fd_mode; }

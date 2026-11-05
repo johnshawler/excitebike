@@ -11,12 +11,14 @@ extern void c2p_pair(const uint8_t *src, uint8_t *dst);
 uint16_t c2p_uni_words[256][8] __attribute__((aligned(4)));
 
 static uint32_t pal32[256], palf[256];
-extern u8 rt_frame_fast, rt_skip_next; extern u8 *fr_bmp, *fr_priv, *fr_spr, *fr_var, *fr_tmp[2], *fr_bmp_chip, *fr_priv_chip; extern void fd_disarm(void); extern void fr_palette(u8 out[32]);
+extern u8 rt_frame_fast, rt_skip_next; extern u8 *fr_tmp_fast[2]; extern u8 *fr_tmp[2];
+extern u8 *fr_bmp, *fr_priv, *fr_spr, *fr_var, *fr_tmp[2], *fr_bmp_chip, *fr_priv_chip; extern void fd_disarm(void); extern void fr_palette(u8 out[32]);
 extern void audio_init(void); extern void fd_show_slow(void); extern void fd_show_fast(void); extern int fd_mode_now(void);
 static uint8_t chip_bmp[248 * 400 + 16] __attribute__((section(".chipbuf"), aligned(16)));
 static uint8_t chip_spr[240 * 192 + 32] __attribute__((section(".chipbuf"), aligned(16)));
 static uint8_t bmp_fast[248 * 400 + 16] __attribute__((aligned(16))), priv_fast[4 * 400 + 16] __attribute__((aligned(16)));   /* the CPU's working copies (fast RAM) of the background bitmap and the private lines */
 static uint8_t chip_var[1024 * 192 + 256 + 8192 + 262144] __attribute__((section(".chipbuf"), aligned(16)));
+static uint8_t fast_tmp[2][64 * 256] __attribute__((aligned(4)));
 static uint8_t chip_tmp[2][64 * 256] __attribute__((section(".chipbuf"), aligned(16)));
 static uint8_t chip_priv[4 * 400 + 16] __attribute__((section(".chipbuf"), aligned(16)));
 static uint8_t fast_pal_shadow[32]; static int pal_mode = -1;
@@ -56,10 +58,10 @@ volatile uint32_t exb_frames_shown, exb_frames_late;
 #ifdef FR_PROF
 uint32_t plat_timer(void)
 {
-    uint32_t t, v;
-    do { t = plat_tick_count; v = *(volatile uint16_t *)0xDFF006; } while (t != plat_tick_count);
+    uint32_t c, v;                                   /* vertical-blank count and beam position, read consistently (the game tick CIA is not in phase with the raster) */
+    do { c = plat_vbl_count; v = *(volatile uint16_t *)0xDFF006; } while (c != plat_vbl_count);
     uint32_t line = ((uint32_t)(*(volatile uint16_t *)0xDFF004 & 1) << 8) | (v >> 8);
-    return t * (312 * 227) + line * 227 + (v & 0xFF);
+    return c * (312 * 227) + line * 227 + (v & 0xFF);
 }
 #else
 #define plat_timer() 0
@@ -221,7 +223,7 @@ void main(void)
     for (unsigned v = 0; v < 256; v++) for (unsigned p = 0; p < 8; p++) c2p_uni_words[v][p] = ((v >> p) & 1) ? 0xFFFF : 0;
     for (unsigned i = 0; i < 256; i++) pal32[i] = nes_pal_rgb[i & 63];
     plat_set_palette256(pal32); pal_mode = 0;
-    fr_bmp = bmp_fast + 8; fr_priv = priv_fast + 8; fr_bmp_chip = chip_bmp + 8; fr_priv_chip = chip_priv + 8; fr_spr = chip_spr + 16; fr_var = chip_var; fr_tmp[0] = chip_tmp[0]; fr_tmp[1] = chip_tmp[1];
+    fr_bmp = bmp_fast + 8; fr_priv = priv_fast + 8; fr_bmp_chip = chip_bmp + 8; fr_priv_chip = chip_priv + 8; fr_spr = chip_spr + 16; fr_var = chip_var; fr_tmp[0] = chip_tmp[0]; fr_tmp[1] = chip_tmp[1]; fr_tmp_fast[0] = fast_tmp[0]; fr_tmp_fast[1] = fast_tmp[1];
     *(volatile uint16_t *)0xDFF02E = 2;                          /* COPCON: the Copper may write the blitter registers */
 #ifdef SCROLLTEST
     scrolltest();

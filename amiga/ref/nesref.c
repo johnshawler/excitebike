@@ -422,12 +422,13 @@ int main(int argc, char **argv) {
     maxframes = atoi(argv[2]); input_frame_start = atoi(argv[3]);
     if (argc > 4) tr = fopen(argv[4], "w");
     if (getenv("PIX_OUT")) pixf = fopen(getenv("PIX_OUT"), "wb");
-    for (int i = 0; i < 2048; i++) ram[i] = (i & 1) ? 0xff : 0x00;                                /* MAME NES RAM power-on pattern is checked in verification */
+    { int zero = getenv("RAM_INIT_ZERO") != NULL; for (int i = 0; i < 2048; i++) ram[i] = zero ? 0 : (i & 1) ? 0xff : 0x00; }       /* RAM_INIT_ZERO: all zeros, as Mesen's default (see test/mesen) */                                /* MAME NES RAM power-on pattern is checked in verification */
     c.s = 0xfd; c.p = FI | FU;
     /* reset sequence: 7 cycles; MAME logs the first write at cycle 16 */
     { const char *e = getenv("PPU_PHASE"); if (e) { int p = atoi(e); ppu_units = p % 5; dot = p / 5; } }
     for (int i = 0; i < 5; i++) cyc();
     { u8 lo = rdv(0xfffc), hi = rdv(0xfffd); c.pc = lo | hi << 8; cyc(); cyc(); }
-    for (;;) { cpu_step(); if (dump_pending) do_dump(); }
+    { int at_nmi = getenv("DUMP_AT_NMI") != NULL; int nmipc = rdv(0xfffa) | rdv(0xfffb) << 8;       /* DUMP_AT_NMI: dump when the NMI handler is entered (a common instant for comparison with other emulators) */
+      for (;;) { if (at_nmi) { if (dump_pending && c.pc == nmipc) do_dump(); cpu_step(); } else { cpu_step(); if (dump_pending) do_dump(); } } }
     return 0;
 }

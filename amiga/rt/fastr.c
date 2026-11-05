@@ -245,7 +245,7 @@ struct FrRect { u8 l0, rows, w, wid; };
 static struct FrRect fr_rect_new[64], fr_rect_old[64], fr_rect_clr[64]; static int fr_nrect_new, fr_nrect_old;
 static u8 fr_var_ok[256]; static u8 fr_svar_tbl = 0xff;
 static const u8 *fr_consts;                           /* four 64-byte patterns: planes 2 and 3 all ones / all zeros for the four sprite palettes */
-static u8 fr_tmp_par; static int fr_tmp_used;
+u8 fr_tmp_par; int fr_tmp_used; u8 *fr_tmp_fast[2];      /* platform: optional fast-RAM copies of the temp pools (copied to chip RAM in the vertical blank) */
 
 static void fr_job_run(const struct BlJob *j) {                         /* software model of the blitter */
     u8 *d = j->d; const u8 *a = j->a, *b = j->b; int sh = j->sh;
@@ -371,7 +371,7 @@ static inline void fr_tmp_row(int r, u32 om, u32 vm, u32 lo, u32 hi, u32 m2, u32
 }
 static int fr_oam_overflow(void);
 static void fr_tmp_begin(void) { memset(fr_scr, 0, 256); }
-static u8 *fr_tmp_end(void) { u8 *t = fr_tmp[fr_tmp_par] + fr_tmp_used * 256; fr_tmp_used++; const u32 *sp = (const u32 *)fr_scr; u32 *dp = (u32 *)t; for (int i = 0; i < 64; i++) dp[i] = sp[i]; return t; }
+static u8 *fr_tmp_end(void) { u8 *t = fr_tmp[fr_tmp_par] + fr_tmp_used * 256; u8 *w = fr_tmp_fast[fr_tmp_par] ? fr_tmp_fast[fr_tmp_par] + fr_tmp_used * 256 : t; fr_tmp_used++; const u32 *sp = (const u32 *)fr_scr; u32 *dp = (u32 *)w; for (int i = 0; i < 64; i++) dp[i] = sp[i]; return t; }
 static const u8 *fr_bgrow(int l, int sx, int *bx) {      /* background bitmap row of line l and the bit position of screen x = sx */
     int bi = fr_lineband[l]; const struct FrBand *bd = &fr_bands[bi]; const u8 *rowp; int x0;
     if (fr_band_special[bi]) { rowp = fr_priv_ptr[bi]; x0 = 0; } else { rowp = bd->base + (l - bd->line0) * FR_ROWB; x0 = bd->x0; }

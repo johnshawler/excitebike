@@ -358,6 +358,7 @@ static void apply_bpl_ptrs(void)
     }
 }
 
+__attribute__((weak)) void plat_vbl_hook(void) { }
 __attribute__((weak)) void plat_prof_pc(uint32_t pc) { (void)pc; }
 __attribute__((weak)) void plat_user_irq3(uint16_t req) { R16(INTREQ) = req; }
 
@@ -384,6 +385,7 @@ void plat_isr_vbl_c(void)
     if (!(R16(INTREQR) & INT_VERTB)) return;
     R16(INTREQ) = INT_VERTB;
     plat_vbl_count++;
+    plat_vbl_hook();                            /* (fast display: install the list prepared by the game, restart the Copper) */
     if (pal_pending) {
         uint8_t banks = pal_banks;
         pal_banks = 0; pal_pending = 0;         /* (a set_palette during the load re-arms it) */
